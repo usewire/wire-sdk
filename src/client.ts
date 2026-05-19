@@ -30,8 +30,8 @@ const POLL_INTERVAL_MS = 2000;
 const POLL_TIMEOUT_MS = 5 * 60 * 1000;
 
 export interface WireClientOptions {
-  /** App id registered with Wire (e.g., 'wire-memory'). Required. */
-  appId: string;
+  /** Agent id registered with Wire (e.g., 'wire-memory'). Required. */
+  agentId: string;
   /**
    * Optional device key from a prior Connection. If provided, connect()
    * reuses this install identity. If omitted, a fresh keypair is
@@ -93,12 +93,12 @@ interface ApiEnvelope<T> {
 }
 
 export class WireClient {
-  readonly appId: string;
+  readonly agentId: string;
   private readonly providedDeviceKey: DeviceKey | null;
 
   constructor(options: WireClientOptions) {
-    if (!options.appId) throw new Error('WireClient: appId is required');
-    this.appId = options.appId;
+    if (!options.agentId) throw new Error('WireClient: agentId is required');
+    this.agentId = options.agentId;
     this.providedDeviceKey = options.deviceKey ?? null;
   }
 
@@ -119,7 +119,7 @@ export class WireClient {
     const nonce = generateNonce();
 
     const jwt = await signConnectJwt({
-      appId: this.appId,
+      agentId: this.agentId,
       privateJwk: deviceKey.privateJwk,
       credentialId: isBootstrap ? null : deviceKey.credentialId,
     });
@@ -164,7 +164,7 @@ export class WireClient {
         polled.is_ephemeral && polled.created_at
           ? new Date(new Date(polled.created_at).getTime() + 7 * 24 * 60 * 60 * 1000)
           : null,
-      appId: polled.app_id,
+      agentId: polled.app_id,
       credentialId: polled.credential_id,
       deviceKey,
       connectedAt: new Date(),
@@ -199,7 +199,7 @@ export class WireClient {
           : null,
         label: data.connection.label,
       },
-      app: data.app,
+      agent: data.app,
     };
   }
 

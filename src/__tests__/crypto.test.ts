@@ -17,7 +17,7 @@ describe('signConnectJwt', () => {
   it('produces an EdDSA JWT verifiable with the matching public key', async () => {
     const k = await generateDeviceKey();
     const jwt = await signConnectJwt({
-      appId: 'wire-memory',
+      agentId: 'wire-memory',
       privateJwk: k.privateJwk,
       credentialId: null,
     });
@@ -45,7 +45,7 @@ describe('signConnectJwt', () => {
   it('sets kid on returning install path', async () => {
     const k = await generateDeviceKey();
     const jwt = await signConnectJwt({
-      appId: 'wire-memory',
+      agentId: 'wire-memory',
       privateJwk: k.privateJwk,
       credentialId: 'cred-abc-123',
     });
