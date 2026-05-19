@@ -60,7 +60,7 @@ export async function generateDeviceKey(): Promise<Omit<DeviceKey, 'credentialId
  * Sign a short-lived EdDSA JWT for /api/v1/sdk/connect.
  *
  * Required claims (matches the server's verifyEd25519 middleware):
- *   - iss = appId (must match a registered app row)
+ *   - iss = agentId (must match a registered agent row)
  *   - aud = 'wire-api'
  *   - sub = credentialId on returning install, 'bootstrap' on first run
  *   - jti = random nonce, used for replay protection
@@ -70,12 +70,12 @@ export async function generateDeviceKey(): Promise<Omit<DeviceKey, 'credentialId
  * credential id; absent on first-run bootstrap.
  */
 export async function signConnectJwt(args: {
-  appId: string;
+  agentId: string;
   privateJwk: JsonWebKey;
   /** server-assigned credential id, or null for first-run bootstrap */
   credentialId: string | null;
 }): Promise<string> {
-  const { appId, privateJwk, credentialId } = args;
+  const { agentId, privateJwk, credentialId } = args;
   const key = await importJWK({ ...privateJwk, alg: 'EdDSA' }, 'EdDSA');
   const header: JWTHeaderParameters = { alg: 'EdDSA' };
   if (credentialId) header.kid = credentialId;
@@ -83,7 +83,7 @@ export async function signConnectJwt(args: {
   const now = Math.floor(Date.now() / 1000);
   const jwt = await new SignJWT({})
     .setProtectedHeader(header)
-    .setIssuer(appId)
+    .setIssuer(agentId)
     .setAudience('wire-api')
     .setSubject(credentialId ?? 'bootstrap')
     .setJti(randomJti())

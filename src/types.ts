@@ -40,8 +40,8 @@ export interface Connection {
    */
   expiresAt: Date | null;
 
-  /** App id this connection was made under. */
-  appId: string;
+  /** Agent id this connection was made under. */
+  agentId: string;
   /** Identifier for this install, useful for audit. */
   credentialId: string;
   /**
@@ -88,7 +88,7 @@ export interface StatusSnapshot {
     lastUsedAt: Date | null;
     label: string | null;
   };
-  app: {
+  agent: {
     id: string;
     name: string;
     verified: boolean;

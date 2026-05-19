@@ -26,7 +26,7 @@ npm install @usewire/sdk
 ```typescript
 import { WireClient } from '@usewire/sdk';
 
-const client = new WireClient({ appId: 'my-app' });
+const client = new WireClient({ agentId: 'my-agent' });
 
 const connection = await client.connect({ label: 'my-laptop' });
 
@@ -61,7 +61,7 @@ interface Connection {
   containerName: string;
   orgSlug: string | null;
   expiresAt: Date | null;   // ephemeral containers only
-  appId: string;
+  agentId: string;
   credentialId: string;
   deviceKey: DeviceKey;
   connectedAt: Date;
@@ -82,7 +82,7 @@ saveSomewhere(conn.deviceKey);
 
 // Later
 const client2 = new WireClient({
-  appId: 'my-app',
+  agentId: 'my-agent',
   deviceKey: loadSomewhere(),
 });
 const conn2 = await client2.connect();
@@ -111,6 +111,19 @@ user's browser; browser-only environments work for `getStatus` and
 
 Rejected promises throw `WireSdkError` with a `code` and HTTP `status` when
 applicable.
+
+## Migrating from 0.1.x
+
+0.2.0 renames the registered-integration primitive from `app` to `agent` across the public surface. Functionality is unchanged.
+
+| 0.1.x | 0.2.0 |
+|---|---|
+| `new WireClient({ appId })` | `new WireClient({ agentId })` |
+| `client.appId` | `client.agentId` |
+| `connection.appId` | `connection.agentId` |
+| `status.app` | `status.agent` |
+
+Rename your call sites; nothing else changes.
 
 ## License
 
