@@ -122,6 +122,31 @@ await client.getStatus(connection.apiKey);
 Disconnect revokes the apiKey but keeps the install identity, so reconnect
 from the same `deviceKey` still works.
 
+## Turn-based agents (non-blocking)
+
+`connect()` and `claim()` block while the user acts. If your agent can't
+hold a promise open across a user turn, use the primitives underneath:
+
+```typescript
+// Turn 1: start the handshake, show the code + URL, persist the handle
+const pending = await client.beginConnect();
+myUi.show(`Code: ${pending.userCode} — open ${pending.url}`);
+save(pending); // plain JSON, safe to stash
+
+// Later turns: single poll, no waiting
+const connection = await client.checkConnection(load());
+if (connection) save(connection);
+
+// Same for claiming: mint the link, detect completion yourself
+const { url } = await client.getClaimUrl(connection.apiKey);
+myUi.show(`Sign up to keep your container: ${url}`);
+// later: (await client.getStatus(apiKey)).container.isEphemeral === false
+```
+
+`beginConnect()` handles are valid until the code expires
+(`pending.expiresAt`, ~10 minutes). `getClaimUrl()` links last 30 minutes
+and throws `ALREADY_CLAIMED` on permanent containers.
+
 ## Runtime
 
 Node 18+, Cloudflare Workers, Deno, Bun. `connect()` needs to drive the

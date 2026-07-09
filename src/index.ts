@@ -11,11 +11,13 @@ export { WireClient } from './client.js';
 export type { WireClientOptions } from './client.js';
 
 export type {
+  ClaimLink,
   ClaimOptions,
   ClaimResult,
   Connection,
   ConnectOptions,
   DeviceKey,
+  PendingConnection,
   StatusSnapshot,
 } from './types.js';
 
