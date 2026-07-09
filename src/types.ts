@@ -72,6 +72,59 @@ export interface ConnectOptions {
   onUserPrompt?: (params: { code: string; url: string }) => void | Promise<void>;
 }
 
+/**
+ * An in-flight connect handshake from beginConnect(). Serializable except
+ * for nothing — all fields are plain data — so turn-based agents can stash
+ * it (including the deviceKey) and resume with checkConnection() later.
+ * The handshake is only redeemable until `expiresAt` (nonce TTL).
+ */
+export interface PendingConnection {
+  /** Short code the user types on the connect screen. */
+  userCode: string;
+  /** Connect-screen URL to show the user. */
+  url: string;
+  /** Handshake nonce; identifies this connect for checkConnection(). */
+  nonce: string;
+  /** Device key used for this connect (bootstrap or reused). */
+  deviceKey: DeviceKey;
+  /** When the handshake nonce expires. */
+  expiresAt: Date;
+  label?: string;
+}
+
+/** A minted claim link from getClaimUrl(). */
+export interface ClaimLink {
+  /** Single-use claim URL to put in front of the user. */
+  url: string;
+  /** When the link expires. */
+  expiresAt: Date;
+}
+
+export interface ClaimOptions {
+  /**
+   * Called with the claim URL the user needs to open to sign up and keep
+   * their container. If omitted, the SDK prints the URL and tries to spawn
+   * the OS browser opener (Node only). Web/Worker consumers should provide
+   * their own handler.
+   */
+  onUserPrompt?: (params: { url: string }) => void | Promise<void>;
+  /**
+   * How long to wait for the user to finish sign-up before giving up.
+   * Defaults to 5 minutes (matches the wire_claim MCP tool). The claim URL
+   * itself stays valid for 30 minutes — on timeout the user can still
+   * finish in the browser, and a later getStatus() will show the result.
+   */
+  timeoutMs?: number;
+}
+
+/**
+ * Result of a successful claim(). `expiresAt` is null once the container
+ * is permanent; the full post-claim snapshot is included for convenience.
+ */
+export interface ClaimResult extends StatusSnapshot {
+  expiresAt: Date | null;
+}
+
 export interface StatusSnapshot {
   container: {
     id: string;

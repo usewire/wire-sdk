@@ -91,6 +91,27 @@ const conn2 = await client2.connect();
 The SDK doesn't store anything for you. Local file, OS keychain, secrets
 manager, your call.
 
+## Claim an ephemeral container
+
+Connections made before the user has a Wire account get an ephemeral
+container (7-day TTL, `connection.expiresAt` tells you when). `claim()`
+upgrades it to permanent from inside your agent flow:
+
+```typescript
+const claimed = await client.claim(connection.apiKey, {
+  onUserPrompt: ({ url }) => {
+    myUi.show(`Sign up to keep your container: ${url}`);
+  },
+});
+// claimed.expiresAt === null — the container is permanent
+```
+
+The SDK mints a claim URL, hands it to your `onUserPrompt` (or prints it
+and opens the OS browser), and polls until the user finishes sign-up
+(5-minute default, `timeoutMs` to override). Already-claimed containers
+resolve immediately. On timeout the link stays valid for 30 minutes and a
+later `getStatus()` will reflect the claim.
+
 ## Disconnect and status
 
 ```typescript
@@ -101,10 +122,35 @@ await client.getStatus(connection.apiKey);
 Disconnect revokes the apiKey but keeps the install identity, so reconnect
 from the same `deviceKey` still works.
 
+## Turn-based agents (non-blocking)
+
+`connect()` and `claim()` block while the user acts. If your agent can't
+hold a promise open across a user turn, use the primitives underneath:
+
+```typescript
+// Turn 1: start the handshake, show the code + URL, persist the handle
+const pending = await client.beginConnect();
+myUi.show(`Code: ${pending.userCode} — open ${pending.url}`);
+save(pending); // plain JSON, safe to stash
+
+// Later turns: single poll, no waiting
+const connection = await client.checkConnection(load());
+if (connection) save(connection);
+
+// Same for claiming: mint the link, detect completion yourself
+const { url } = await client.getClaimUrl(connection.apiKey);
+myUi.show(`Sign up to keep your container: ${url}`);
+// later: (await client.getStatus(apiKey)).container.isEphemeral === false
+```
+
+`beginConnect()` handles are valid until the code expires
+(`pending.expiresAt`, ~10 minutes). `getClaimUrl()` links last 30 minutes
+and throws `ALREADY_CLAIMED` on permanent containers.
+
 ## Runtime
 
 Node 18+, Cloudflare Workers, Deno, Bun. `connect()` needs to drive the
-user's browser; browser-only environments work for `getStatus` and
+user's browser; browser-only environments work for `getStatus`, `claim`, and
 `disconnect`.
 
 ## Errors
