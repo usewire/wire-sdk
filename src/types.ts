@@ -72,6 +72,31 @@ export interface ConnectOptions {
   onUserPrompt?: (params: { code: string; url: string }) => void | Promise<void>;
 }
 
+export interface ClaimOptions {
+  /**
+   * Called with the claim URL the user needs to open to sign up and keep
+   * their container. If omitted, the SDK prints the URL and tries to spawn
+   * the OS browser opener (Node only). Web/Worker consumers should provide
+   * their own handler.
+   */
+  onUserPrompt?: (params: { url: string }) => void | Promise<void>;
+  /**
+   * How long to wait for the user to finish sign-up before giving up.
+   * Defaults to 5 minutes (matches the wire_claim MCP tool). The claim URL
+   * itself stays valid for 30 minutes — on timeout the user can still
+   * finish in the browser, and a later getStatus() will show the result.
+   */
+  timeoutMs?: number;
+}
+
+/**
+ * Result of a successful claim(). `expiresAt` is null once the container
+ * is permanent; the full post-claim snapshot is included for convenience.
+ */
+export interface ClaimResult extends StatusSnapshot {
+  expiresAt: Date | null;
+}
+
 export interface StatusSnapshot {
   container: {
     id: string;

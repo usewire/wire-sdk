@@ -91,6 +91,27 @@ const conn2 = await client2.connect();
 The SDK doesn't store anything for you. Local file, OS keychain, secrets
 manager, your call.
 
+## Claim an ephemeral container
+
+Connections made before the user has a Wire account get an ephemeral
+container (7-day TTL, `connection.expiresAt` tells you when). `claim()`
+upgrades it to permanent from inside your agent flow:
+
+```typescript
+const claimed = await client.claim(connection.apiKey, {
+  onUserPrompt: ({ url }) => {
+    myUi.show(`Sign up to keep your container: ${url}`);
+  },
+});
+// claimed.expiresAt === null — the container is permanent
+```
+
+The SDK mints a claim URL, hands it to your `onUserPrompt` (or prints it
+and opens the OS browser), and polls until the user finishes sign-up
+(5-minute default, `timeoutMs` to override). Already-claimed containers
+resolve immediately. On timeout the link stays valid for 30 minutes and a
+later `getStatus()` will reflect the claim.
+
 ## Disconnect and status
 
 ```typescript
@@ -104,7 +125,7 @@ from the same `deviceKey` still works.
 ## Runtime
 
 Node 18+, Cloudflare Workers, Deno, Bun. `connect()` needs to drive the
-user's browser; browser-only environments work for `getStatus` and
+user's browser; browser-only environments work for `getStatus`, `claim`, and
 `disconnect`.
 
 ## Errors

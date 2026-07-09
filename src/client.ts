@@ -1,12 +1,15 @@
 /**
  * WireClient — stateless connection manager for /api/v1/sdk/*.
  *
- * Surface (3 methods):
+ * Surface (4 methods):
  *   - connect()    — open the connect screen, wait for the user to pick
  *                    a container, return the Connection. SDK does NOT
  *                    persist anything; caller keeps what they want.
  *   - getStatus()  — live snapshot of the active connection. Caller
  *                    supplies the apiKey from a prior Connection.
+ *   - claim()      — upgrade an ephemeral container to permanent: mint a
+ *                    claim URL, surface it to the user, poll until the
+ *                    sign-up completes.
  *   - disconnect() — revoke the connection. Caller supplies the apiKey
  *                    from a prior Connection.
  *
@@ -15,6 +18,8 @@
  */
 import { generateDeviceKey, signConnectJwt } from './crypto.js';
 import {
+  type ClaimOptions,
+  type ClaimResult,
   type Connection,
   type ConnectOptions,
   type DeviceKey,
@@ -28,6 +33,7 @@ const API_BASE = 'https://app.usewire.io';
 const DEFAULT_CONSENT_PATH = '/sdk/connect';
 const POLL_INTERVAL_MS = 2000;
 const POLL_TIMEOUT_MS = 5 * 60 * 1000;
+const CLAIM_TIMEOUT_MS = 5 * 60 * 1000;
 
 export interface WireClientOptions {
   /** Agent id registered with Wire (e.g., 'wire-memory'). Required. */
@@ -204,6 +210,64 @@ export class WireClient {
   }
 
   /**
+   * Upgrade an ephemeral container to permanent. Mints a claim URL, hands
+   * it to the user (via onUserPrompt or the default print + browser-open),
+   * then polls getStatus() until the container stops being ephemeral.
+   *
+   * Idempotent: if the container is already claimed, resolves immediately
+   * with the current snapshot. On timeout the claim URL stays valid for
+   * 30 minutes — the user can still finish in the browser, and a later
+   * getStatus() will reflect it.
+   */
+  async claim(apiKey: string, options: ClaimOptions = {}): Promise<ClaimResult> {
+    if (!apiKey) throw new WireSdkError('NOT_CONNECTED', 'apiKey is required');
+
+    let claimUrl: string;
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/sdk/claim`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+      const data = await unwrap<{ claim_url: string; expires_in_seconds: number }>(res);
+      claimUrl = data.claim_url;
+    } catch (err) {
+      if (err instanceof WireSdkError && err.code === 'ALREADY_CLAIMED') {
+        const snapshot = await this.getStatus(apiKey);
+        return { ...snapshot, expiresAt: snapshot.container.ephemeralExpiresAt };
+      }
+      throw err;
+    }
+
+    if (options.onUserPrompt) {
+      await options.onUserPrompt({ url: claimUrl });
+    } else {
+      console.log(`\nSign up to keep your container: ${claimUrl}\n`);
+      await openInOsBrowser(claimUrl);
+    }
+
+    const timeoutMs = options.timeoutMs ?? CLAIM_TIMEOUT_MS;
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      try {
+        const snapshot = await this.getStatus(apiKey);
+        if (!snapshot.container.isEphemeral) {
+          return { ...snapshot, expiresAt: null };
+        }
+      } catch (err) {
+        if (err instanceof WireSdkError && err.status === 401) throw err;
+        // transient — fall through to retry
+      }
+      await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+    }
+    throw new WireSdkError(
+      'CLAIM_TIMEOUT',
+      `Claim not completed within ${Math.round(timeoutMs / 60000)} minutes. ` +
+        'The claim link stays valid for 30 minutes — once the user finishes ' +
+        'sign-up, getStatus() will show the container as permanent.'
+    );
+  }
+
+  /**
    * Revoke the connection. Idempotent — calling with an already-revoked
    * apiKey is fine.
    */
@@ -275,7 +339,14 @@ async function defaultUserPrompt(code: string, url: string): Promise<void> {
   console.log(`\nYour code: ${code}`);
   console.log(`Open: ${url}`);
   console.log(`Type the code on the connect screen to authorize this device.\n`);
-  // Detect Node without statically importing node:* (browser bundlers stay clean).
+  await openInOsBrowser(url);
+}
+
+/**
+ * Best-effort OS browser open on Node; no-op elsewhere. Detects Node
+ * without statically importing node:* (browser bundlers stay clean).
+ */
+async function openInOsBrowser(url: string): Promise<void> {
   const proc = (
     globalThis as { process?: { versions?: { node?: string }; platform?: string } }
   ).process;
