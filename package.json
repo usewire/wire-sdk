@@ -1,6 +1,6 @@
 {
   "name": "@usewire/sdk",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Connect Wire context containers to your agent, harness, or AI infrastructure.",
   "license": "MIT",
   "author": "Wire (Superloops LLC)",
