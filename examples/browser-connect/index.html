@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Wire browser connect example</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 560px; margin: 4rem auto; padding: 0 1rem; }
+    button { padding: 0.6rem 1.2rem; border-radius: 9999px; border: 1px solid #ccc; cursor: pointer; margin-right: 0.5rem; }
+    pre { background: #f4f4f4; padding: 1rem; border-radius: 8px; overflow-x: auto; }
+  </style>
+</head>
+<body>
+  <h1>Wire browser connect</h1>
+  <p>
+    A minimal browser agent. Serve this page from an origin whose URL is
+    registered on your agent's redirect URI allowlist, set your agent id
+    below, and connect. The same page doubles as the OAuth callback.
+  </p>
+  <button id="connect-redirect">Connect (redirect)</button>
+  <button id="connect-popup">Connect (popup)</button>
+  <pre id="out">not connected</pre>
+
+  <script type="module">
+    // In your app: import { WireClient } from '@usewire/sdk';
+    import { WireClient } from '../../src/index.ts';
+
+    const AGENT_ID = 'my-agent'; // your registered agent id
+    const client = new WireClient({ agentId: AGENT_ID });
+    const out = document.getElementById('out');
+    const show = (c) =>
+      (out.textContent = JSON.stringify(
+        { mcpUrl: c.mcpUrl, apiKey: c.apiKey.slice(0, 12) + '…', container: c.containerName },
+        null,
+        2
+      ));
+
+    // Finish an in-flight connect on page load. Redirect mode resolves the
+    // Connection here; a popup child relays to its opener and returns null.
+    try {
+      const connection = await client.completeConnectInBrowser();
+      if (connection) show(connection);
+    } catch (err) {
+      out.textContent = `connect failed: ${err.message}`;
+    }
+
+    document.getElementById('connect-redirect').onclick = () =>
+      client.connectInBrowser({ redirectUri: location.origin + location.pathname });
+
+    document.getElementById('connect-popup').onclick = async () => {
+      try {
+        const connection = await client.connectInBrowser({
+          redirectUri: location.origin + location.pathname,
+          popup: true,
+        });
+        show(connection);
+      } catch (err) {
+        out.textContent = `connect failed: ${err.message}`;
+      }
+    };
+  </script>
+</body>
+</html>

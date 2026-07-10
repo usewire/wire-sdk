@@ -29,6 +29,7 @@
  */
 import { generateDeviceKey, signConnectJwt } from './crypto.js';
 import {
+  type BrowserConnectOptions,
   type ClaimLink,
   type ClaimOptions,
   type ClaimResult,
@@ -47,6 +48,13 @@ const DEFAULT_CONSENT_PATH = '/sdk/connect';
 const POLL_INTERVAL_MS = 2000;
 const POLL_TIMEOUT_MS = 5 * 60 * 1000;
 const CLAIM_TIMEOUT_MS = 5 * 60 * 1000;
+
+// Browser connect (OAuth Authorization Code + PKCE)
+const OAUTH_AUTHORIZE_PATH = '/api/auth/oauth2/authorize';
+const OAUTH_TOKEN_PATH = '/api/auth/oauth2/token';
+const OAUTH_SCOPE = 'containers:read containers:write';
+const BROWSER_CONNECT_STORAGE_KEY = 'wire-sdk:browser-connect';
+const BROWSER_CONNECT_MESSAGE_TYPE = 'wire-sdk:browser-connect-result';
 
 export interface WireClientOptions {
   /** Agent id registered with Wire (e.g., 'wire-memory'). Required. */
@@ -225,23 +233,215 @@ export class WireClient {
       );
     }
 
-    return {
-      mcpUrl: data.mcp_endpoint,
-      apiUrl: data.api_endpoint,
-      apiKey: data.api_key,
-      containerId: data.container_id,
-      containerName: data.container_name,
-      orgSlug: deriveOrgSlug(data.mcp_endpoint),
-      expiresAt:
-        data.is_ephemeral && data.created_at
-          ? new Date(new Date(data.created_at).getTime() + 7 * 24 * 60 * 60 * 1000)
-          : null,
-      agentId: data.app_id,
-      credentialId: data.credential_id,
+    return connectionFromWireData(data, {
       deviceKey: pending.deviceKey,
-      connectedAt: new Date(),
       label: pending.label,
+    });
+  }
+
+  /**
+   * Browser-native connect (OAuth Authorization Code + PKCE). For agents
+   * that run in the user's browser: no code to type, no second device.
+   *
+   * Redirect mode (default): navigates the current tab to the Wire
+   * authorization screen; the user picks a container and lands back on
+   * `redirectUri`, where your page calls completeConnectInBrowser() to
+   * finish. The returned promise never resolves (the page navigates).
+   *
+   * Popup mode (`popup: true`): opens the authorization screen in a
+   * popup; `redirectUri` must still be one of your registered URIs, and
+   * that page still calls completeConnectInBrowser(), which relays the
+   * result to this window. Resolves with the Connection.
+   */
+  async connectInBrowser(options: BrowserConnectOptions): Promise<Connection> {
+    requireBrowser('connectInBrowser');
+    if (!options?.redirectUri) {
+      throw new WireSdkError('BAD_OPTIONS', 'redirectUri is required');
+    }
+
+    const verifier = generateRandomUrlSafe(48);
+    const state = generateRandomUrlSafe(24);
+    const challenge = await s256(verifier);
+
+    const authorizeUrl = new URL(`${API_BASE}${OAUTH_AUTHORIZE_PATH}`);
+    authorizeUrl.searchParams.set('response_type', 'code');
+    authorizeUrl.searchParams.set('client_id', this.agentId);
+    authorizeUrl.searchParams.set('redirect_uri', options.redirectUri);
+    authorizeUrl.searchParams.set('scope', OAUTH_SCOPE);
+    authorizeUrl.searchParams.set('state', state);
+    authorizeUrl.searchParams.set('code_challenge', challenge);
+    authorizeUrl.searchParams.set('code_challenge_method', 'S256');
+
+    if (!options.popup) {
+      sessionStorage.setItem(
+        BROWSER_CONNECT_STORAGE_KEY,
+        JSON.stringify({ verifier, state, redirectUri: options.redirectUri, agentId: this.agentId })
+      );
+      location.assign(authorizeUrl.toString());
+      // The page is navigating away; hold forever so callers can `await`.
+      return new Promise<never>(() => {});
+    }
+
+    // Popup mode: the verifier stays in this window's memory; the popup's
+    // callback page posts the code back via postMessage.
+    const popup = window.open(authorizeUrl.toString(), 'wire-connect', 'width=480,height=720');
+    if (!popup) {
+      throw new WireSdkError('POPUP_BLOCKED', 'The browser blocked the connect popup');
+    }
+
+    const timeoutMs = options.timeoutMs ?? POLL_TIMEOUT_MS;
+    const result = await new Promise<{ code: string }>((resolve, reject) => {
+      const cleanup = () => {
+        window.removeEventListener('message', onMessage);
+        clearInterval(closedPoll);
+        clearTimeout(timer);
+      };
+      const onMessage = (event: MessageEvent) => {
+        if (event.origin !== location.origin) return;
+        const data = event.data as
+          | { type?: string; code?: string; state?: string; error?: string }
+          | undefined;
+        if (data?.type !== BROWSER_CONNECT_MESSAGE_TYPE) return;
+        cleanup();
+        if (data.error) {
+          reject(new WireSdkError('OAUTH_ERROR', data.error));
+        } else if (data.state !== state || !data.code) {
+          reject(new WireSdkError('STATE_MISMATCH', 'OAuth state did not match'));
+        } else {
+          resolve({ code: data.code });
+        }
+      };
+      const closedPoll = setInterval(() => {
+        if (popup.closed) {
+          cleanup();
+          reject(new WireSdkError('POPUP_CLOSED', 'The connect popup was closed'));
+        }
+      }, 500);
+      const timer = setTimeout(() => {
+        cleanup();
+        popup.close();
+        reject(new WireSdkError('POLL_TIMEOUT', 'Connect timed out. Please try again.'));
+      }, timeoutMs);
+      window.addEventListener('message', onMessage);
+    });
+
+    return this.exchangeBrowserCode(result.code, options.redirectUri, verifier);
+  }
+
+  /**
+   * Finish a browser connect on your redirect page. Safe to call
+   * unconditionally on page load:
+   *
+   * - Redirect mode: exchanges the code and returns the Connection
+   *   (also scrubs code/state from the URL).
+   * - Popup mode: relays the result to the opener window and closes the
+   *   popup; returns null.
+   * - No OAuth params in the URL: returns null.
+   *
+   * Throws OAUTH_ERROR if the user denied access.
+   */
+  async completeConnectInBrowser(): Promise<Connection | null> {
+    requireBrowser('completeConnectInBrowser');
+    const params = new URLSearchParams(location.search);
+    const code = params.get('code');
+    const state = params.get('state');
+    const oauthError = params.get('error');
+    if (!code && !oauthError) return null;
+
+    const stashRaw = sessionStorage.getItem(BROWSER_CONNECT_STORAGE_KEY);
+
+    // Popup child: no stash here (it lives in the opener) — relay and close.
+    if (!stashRaw && window.opener) {
+      (window.opener as Window).postMessage(
+        {
+          type: BROWSER_CONNECT_MESSAGE_TYPE,
+          code,
+          state,
+          error: oauthError
+            ? params.get('error_description') ?? oauthError
+            : undefined,
+        },
+        location.origin
+      );
+      window.close();
+      return null;
+    }
+
+    if (oauthError) {
+      sessionStorage.removeItem(BROWSER_CONNECT_STORAGE_KEY);
+      scrubOAuthParams();
+      throw new WireSdkError(
+        'OAUTH_ERROR',
+        params.get('error_description') ?? oauthError
+      );
+    }
+    if (!stashRaw) return null;
+
+    const stash = JSON.parse(stashRaw) as {
+      verifier: string;
+      state: string;
+      redirectUri: string;
+      agentId: string;
     };
+    if (stash.state !== state) {
+      throw new WireSdkError('STATE_MISMATCH', 'OAuth state did not match');
+    }
+
+    const connection = await this.exchangeBrowserCode(
+      code!,
+      stash.redirectUri,
+      stash.verifier
+    );
+    sessionStorage.removeItem(BROWSER_CONNECT_STORAGE_KEY);
+    scrubOAuthParams();
+    return connection;
+  }
+
+  private async exchangeBrowserCode(
+    code: string,
+    redirectUri: string,
+    codeVerifier: string
+  ): Promise<Connection> {
+    const res = await fetch(`${API_BASE}${OAUTH_TOKEN_PATH}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        code,
+        redirect_uri: redirectUri,
+        client_id: this.agentId,
+        code_verifier: codeVerifier,
+      }),
+    });
+    const json = (await res.json()) as {
+      error?: string;
+      error_description?: string;
+      connection?: {
+        container_id: string;
+        container_name: string;
+        mcp_endpoint: string;
+        api_endpoint: string;
+        api_key: string;
+        is_ephemeral: boolean;
+        created_at: string | null;
+        app_id: string;
+        credential_id: string;
+      };
+    };
+    if (!res.ok || json.error) {
+      throw new WireSdkError(
+        'OAUTH_ERROR',
+        json.error_description ?? json.error ?? `Token exchange failed: ${res.status}`,
+        res.status
+      );
+    }
+    if (!json.connection) {
+      throw new WireSdkError(
+        'NO_CONNECTION',
+        'Token exchange succeeded but no connection was returned. Is this agent registered for browser connects?'
+      );
+    }
+    return connectionFromWireData(json.connection, {});
   }
 
   /** Live container + connection snapshot from /api/v1/sdk/status. */
@@ -370,6 +570,83 @@ function generateNonce(): string {
   const buf = new Uint8Array(24);
   crypto.getRandomValues(buf);
   return Array.from(buf, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/** Map the server's snake_case connection payload to a Connection. */
+function connectionFromWireData(
+  data: {
+    container_id: string;
+    container_name: string;
+    mcp_endpoint: string;
+    api_endpoint: string;
+    api_key: string;
+    is_ephemeral: boolean;
+    created_at: string | null;
+    app_id: string;
+    credential_id: string;
+  },
+  extras: { deviceKey?: DeviceKey; label?: string }
+): Connection {
+  return {
+    mcpUrl: data.mcp_endpoint,
+    apiUrl: data.api_endpoint,
+    apiKey: data.api_key,
+    containerId: data.container_id,
+    containerName: data.container_name,
+    orgSlug: deriveOrgSlug(data.mcp_endpoint),
+    expiresAt:
+      data.is_ephemeral && data.created_at
+        ? new Date(new Date(data.created_at).getTime() + 7 * 24 * 60 * 60 * 1000)
+        : null,
+    agentId: data.app_id,
+    credentialId: data.credential_id,
+    deviceKey: extras.deviceKey,
+    connectedAt: new Date(),
+    label: extras.label,
+  };
+}
+
+function requireBrowser(method: string): void {
+  if (typeof window === 'undefined' || typeof location === 'undefined') {
+    throw new WireSdkError(
+      'NOT_BROWSER',
+      `${method}() only works in a browser. Use connect() elsewhere.`
+    );
+  }
+}
+
+/** Random base64url string of `bytes` random bytes (RFC 7636 verifier-safe). */
+function generateRandomUrlSafe(bytes: number): string {
+  const buf = new Uint8Array(bytes);
+  crypto.getRandomValues(buf);
+  return btoa(String.fromCharCode(...buf))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+}
+
+/** S256 PKCE challenge, base64url. */
+async function s256(verifier: string): Promise<string> {
+  const hash = new Uint8Array(
+    await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier))
+  );
+  return btoa(String.fromCharCode(...hash))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+}
+
+/** Remove OAuth params from the current URL without a reload. */
+function scrubOAuthParams(): void {
+  try {
+    const url = new URL(location.href);
+    for (const p of ['code', 'state', 'error', 'error_description', 'iss']) {
+      url.searchParams.delete(p);
+    }
+    history.replaceState(null, '', url.toString());
+  } catch {
+    // Cosmetic only.
+  }
 }
 
 function deriveOrgSlug(mcpUrl: string): string | null {

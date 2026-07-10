@@ -122,6 +122,29 @@ await client.getStatus(connection.apiKey);
 Disconnect revokes the apiKey but keeps the install identity, so reconnect
 from the same `deviceKey` still works.
 
+## From a browser app
+
+Browser agents skip the device flow entirely: `connectInBrowser()` sends
+the user through Wire's authorization screen (Authorization Code + PKCE)
+where they pick a container, and your page gets the Connection back.
+
+```typescript
+// Starting the flow (your app page):
+await client.connectInBrowser({ redirectUri: 'https://my-app.com/callback' });
+// or popup mode, which resolves in place:
+const connection = await client.connectInBrowser({
+  redirectUri: 'https://my-app.com/callback',
+  popup: true,
+});
+
+// On your callback page (safe to call on every load):
+const connection = await client.completeConnectInBrowser();
+```
+
+Register your redirect URIs on the agent in the Wire dashboard first.
+Browser connections have no `deviceKey`; the OAuth grant is the identity.
+See `examples/browser-connect/` for a runnable page.
+
 ## Turn-based agents (non-blocking)
 
 `connect()` and `claim()` block while the user acts. If your agent can't

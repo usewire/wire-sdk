@@ -47,9 +47,11 @@ export interface Connection {
   /**
    * Device key used for this connect. Persist this if you want a future
    * connect() to reuse the same install identity, then pass it back via
-   * `new WireClient({ deviceKey })`.
+   * `new WireClient({ deviceKey })`. Absent for browser connections
+   * (connectInBrowser), which authenticate via OAuth instead of a
+   * device keypair.
    */
-  deviceKey: DeviceKey;
+  deviceKey?: DeviceKey;
 
   connectedAt: Date;
   label?: string;
@@ -90,6 +92,24 @@ export interface PendingConnection {
   /** When the handshake nonce expires. */
   expiresAt: Date;
   label?: string;
+}
+
+export interface BrowserConnectOptions {
+  /**
+   * Where Wire should send the user back after they authorize. Must be
+   * registered on your agent's redirect URI allowlist in the dashboard.
+   * In redirect mode this page calls completeConnectInBrowser(); in popup
+   * mode it does the same and the SDK relays the result to the opener.
+   */
+  redirectUri: string;
+  /**
+   * Open the authorization screen in a popup instead of navigating the
+   * current tab. The returned promise resolves with the Connection once
+   * the user finishes.
+   */
+  popup?: boolean;
+  /** Popup mode only: how long to wait for the user. Default 5 minutes. */
+  timeoutMs?: number;
 }
 
 /** A minted claim link from getClaimUrl(). */
