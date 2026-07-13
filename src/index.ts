@@ -1,7 +1,12 @@
 /**
  * @usewire/sdk — connection manager for Wire context containers.
  *
- * Surface: WireClient with connect / connectInBrowser / getStatus / claim / disconnect.
+ * Two surfaces for two modes:
+ * - WireClient (connect mode): your user authorizes against their own Wire
+ *   account — connect / connectInBrowser / getStatus / claim / disconnect.
+ * - WireProvisionClient (provision mode): your backend holds an org API key
+ *   and manages containers in your own organization — containers.create /
+ *   list / update / delete, plus whoami.
  *
  * The SDK is stateless. connect() returns a Connection with everything
  * you need (mcpUrl, apiKey, deviceKey, container metadata). The caller
@@ -9,6 +14,13 @@
  */
 export { WireClient } from './client.js';
 export type { WireClientOptions } from './client.js';
+
+export { WireProvisionClient } from './provision.js';
+export type {
+  WireProvisionClientOptions,
+  ProvisionedContainer,
+  ProvisionIdentity,
+} from './provision.js';
 
 export type {
   BrowserConnectOptions,
