@@ -6,7 +6,8 @@
  *   account — connect / connectInBrowser / getStatus / claim / disconnect.
  * - WireProvisionClient (provision mode): your backend holds an org API key
  *   and manages containers in your own organization — containers.create /
- *   list / update / delete, plus whoami.
+ *   list / update / delete, plus whoami. Each container exposes a case
+ *   surface: container.case(id) for scoped data ops, container.cases.list().
  *
  * The SDK is stateless. connect() returns a Connection with everything
  * you need (mcpUrl, apiKey, deviceKey, container metadata). The caller
@@ -15,11 +16,14 @@
 export { WireClient } from './client.js';
 export type { WireClientOptions } from './client.js';
 
-export { WireProvisionClient } from './provision.js';
+export { WireProvisionClient, ProvisionedContainerHandle, WireCase } from './provision.js';
 export type {
   WireProvisionClientOptions,
   ProvisionedContainer,
   ProvisionIdentity,
+  CaseSummary,
+  CaseListResult,
+  CaseToolResult,
 } from './provision.js';
 
 export type {
