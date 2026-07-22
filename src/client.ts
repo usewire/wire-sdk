@@ -41,8 +41,6 @@ import {
   WireSdkError,
 } from './types.js';
 
-// Hardcoded — consumers never need a knob for this. For preview/dev loops,
-// edit this constant in your local checkout and rebuild.
 const API_BASE = 'https://app.usewire.io';
 const DEFAULT_CONSENT_PATH = '/sdk/connect';
 const POLL_INTERVAL_MS = 2000;
@@ -65,6 +63,8 @@ export interface WireClientOptions {
    * generated and returned to you on Connection.deviceKey.
    */
   deviceKey?: DeviceKey;
+  /** Override the API origin (self-hosted / preview). Defaults to app.usewire.io. */
+  baseUrl?: string;
 }
 
 interface ConnectResponseData {
@@ -122,11 +122,13 @@ interface ApiEnvelope<T> {
 export class WireClient {
   readonly agentId: string;
   private readonly providedDeviceKey: DeviceKey | null;
+  private readonly base: string;
 
   constructor(options: WireClientOptions) {
     if (!options.agentId) throw new Error('WireClient: agentId is required');
     this.agentId = options.agentId;
     this.providedDeviceKey = options.deviceKey ?? null;
+    this.base = (options.baseUrl ?? API_BASE).replace(/\/$/, '');
   }
 
   /**
@@ -193,7 +195,7 @@ export class WireClient {
     };
     if (isBootstrap) connectBody.public_key = deviceKey.publicKey;
 
-    const connectRes = await fetch(`${API_BASE}/api/v1/sdk/connect`, {
+    const connectRes = await fetch(`${this.base}/api/v1/sdk/connect`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -205,7 +207,7 @@ export class WireClient {
 
     return {
       userCode: connectData.user_code,
-      url: `${API_BASE}${DEFAULT_CONSENT_PATH}`,
+      url: `${this.base}${DEFAULT_CONSENT_PATH}`,
       nonce: connectData.nonce,
       // Bake the assigned credentialId into the device key so it's
       // persistable from the handle (and reusable in a future ctor call).
@@ -222,7 +224,7 @@ export class WireClient {
    */
   async checkConnection(pending: PendingConnection): Promise<Connection | null> {
     const res = await fetch(
-      `${API_BASE}/api/v1/sdk/poll?nonce=${encodeURIComponent(pending.nonce)}`
+      `${this.base}/api/v1/sdk/poll?nonce=${encodeURIComponent(pending.nonce)}`
     );
     const data = (await res.json()) as PollResponse;
     if (data.status === 'pending') return null;
@@ -263,7 +265,7 @@ export class WireClient {
     const state = generateRandomUrlSafe(24);
     const challenge = await s256(verifier);
 
-    const authorizeUrl = new URL(`${API_BASE}${OAUTH_AUTHORIZE_PATH}`);
+    const authorizeUrl = new URL(`${this.base}${OAUTH_AUTHORIZE_PATH}`);
     authorizeUrl.searchParams.set('response_type', 'code');
     authorizeUrl.searchParams.set('client_id', this.agentId);
     authorizeUrl.searchParams.set('redirect_uri', options.redirectUri);
@@ -402,7 +404,7 @@ export class WireClient {
     redirectUri: string,
     codeVerifier: string
   ): Promise<Connection> {
-    const res = await fetch(`${API_BASE}${OAUTH_TOKEN_PATH}`, {
+    const res = await fetch(`${this.base}${OAUTH_TOKEN_PATH}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
@@ -447,7 +449,7 @@ export class WireClient {
   /** Live container + connection snapshot from /api/v1/sdk/status. */
   async getStatus(apiKey: string): Promise<StatusSnapshot> {
     if (!apiKey) throw new WireSdkError('NOT_CONNECTED', 'apiKey is required');
-    const res = await fetch(`${API_BASE}/api/v1/sdk/status`, {
+    const res = await fetch(`${this.base}/api/v1/sdk/status`, {
       headers: { Authorization: `Bearer ${apiKey}` },
     });
     const data = await unwrap<StatusResponseData>(res);
@@ -535,7 +537,7 @@ export class WireClient {
    */
   async getClaimUrl(apiKey: string): Promise<ClaimLink> {
     if (!apiKey) throw new WireSdkError('NOT_CONNECTED', 'apiKey is required');
-    const res = await fetch(`${API_BASE}/api/v1/sdk/claim`, {
+    const res = await fetch(`${this.base}/api/v1/sdk/claim`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${apiKey}` },
     });
@@ -553,7 +555,7 @@ export class WireClient {
   async disconnect(apiKey: string): Promise<void> {
     if (!apiKey) return;
     try {
-      await fetch(`${API_BASE}/api/v1/sdk/connection`, {
+      await fetch(`${this.base}/api/v1/sdk/connection`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${apiKey}` },
       });
