@@ -89,9 +89,10 @@ interface CaseWire {
   status: string;
   entry_count: number;
   size_bytes: number;
-  created_at: number | null;
-  last_active_at: number | null;
-  closed_at: number | null;
+  // Observed as ISO strings on the wire; epoch ms also accepted (Date handles both).
+  created_at: string | number | null;
+  last_active_at: string | number | null;
+  closed_at: string | number | null;
   retention_class: string;
 }
 
