@@ -149,6 +149,27 @@ export declare function validateCustomToolDefinition(raw: unknown, lookup: BaseT
     ok: false;
     errors: ValidationError[];
 };
+/** What a custom tool USES, as a closed vocabulary a consent screen can put in plain words
+ *  (SUP-954). Derived from the base tool and the computed data flow, never declared by the author,
+ *  so a manifest cannot understate it.
+ *
+ *    read            reads the container's records (wire_explore, wire_navigate, wire_search, ...)
+ *    sql_read        runs read-only SQL over the container's structured records (wire_query)
+ *    export          reads every entry in bulk (wire_export)
+ *    write           creates or changes records (any base tool that mutates)
+ *    delete          deletes records (wire_delete; always with `write`)
+ *    app_call        calls one of the app's actions: data named by the mapping leaves the container
+ *    app_sets_args   an action's output becomes the base tool's arguments: the app decides part of
+ *                    what is written, deleted, or queried
+ *    records_to_app  base tool output (container data) reaches an after action
+ *
+ *  A base tool this module does not name is `write` if it mutates, else `read`. The list is in
+ *  TOOL_CAPABILITIES order, so equal tools always produce equal lists. `def` (optional) is the
+ *  definition the flow was computed from: a tool with a `before` / `after` step is `app_call` even
+ *  when its stored flow is missing, so a lost flow can never understate it. */
+export declare const TOOL_CAPABILITIES: readonly ["read", "sql_read", "export", "write", "delete", "app_call", "app_sets_args", "records_to_app"];
+export type ToolCapability = (typeof TOOL_CAPABILITIES)[number];
+export declare function toolCapabilities(base: Pick<ToolDef, "name" | "mutates">, dataFlow: CustomToolDataFlow | null | undefined, def?: Pick<CustomToolDefinition, "before" | "after">): ToolCapability[];
 /** Check a JSON Schema against the supported subset (the keywords this module enforces). The
  *  manifest validator uses it for action input and output schemas, which are enforced at call
  *  time by the same `validateValue`. */

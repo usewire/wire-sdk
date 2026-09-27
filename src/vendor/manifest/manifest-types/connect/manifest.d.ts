@@ -1,5 +1,5 @@
 import type { ToolDef } from "../tools/tool-def.js";
-import { type BaseToolLookup, type CustomToolDataFlow, type CustomToolDefinition, type ValidationError } from "../tools/custom.js";
+import { type BaseToolLookup, type CustomToolDataFlow, type CustomToolDefinition, type ToolCapability, type ValidationError } from "../tools/custom.js";
 import { type GeoFields } from "../geo-fields.js";
 export declare const MANIFEST_FORMAT_VERSION = 1;
 export declare const MANIFEST_MAX_BYTES: number;
@@ -54,6 +54,38 @@ export interface ManifestAction {
     /** Defaults to, and may not exceed, ACTION_TIMEOUT_MAX_MS. */
     timeout_ms: number;
 }
+/** Which transports an app tool is on after install (SUP-954). Each defaults to true. */
+export interface ManifestToolTransports {
+    mcp?: boolean;
+    rest?: boolean;
+}
+/** A tool as the manifest carries it: a custom tool definition, plus the install policy for its
+ *  visibility (SUP-954). `enabled` and `transports` are present in the normalized manifest only
+ *  when the document gave them, and are never part of the stored definition. */
+export type ManifestTool = CustomToolDefinition & {
+    /** Is the tool on after install? Default true. */
+    enabled?: boolean;
+    /** On which transports. Each defaults to true. */
+    transports?: ManifestToolTransports;
+};
+/** The analysis graphs an app needs (SUP-954). Each defaults to false. */
+export interface ManifestAnalysis {
+    /** The provenance graph (corroborates / elaborates / supersedes / contradicts). */
+    provenance?: boolean;
+    /** The entity graph (canonical entities, mentions, related_via). */
+    entity?: boolean;
+}
+/** `analysis`, normalized: both keys, booleans. What apply returns as `requestedAnalysis`. */
+export interface RequestedAnalysis {
+    provenance: boolean;
+    entity: boolean;
+}
+/** An app tool's visibility, as the tools table holds it. */
+export interface ToolVisibility {
+    enabled: boolean;
+    mcpEnabled: boolean;
+    restEnabled: boolean;
+}
 export interface ConnectManifest {
     manifest: typeof MANIFEST_FORMAT_VERSION;
     app: {
@@ -63,18 +95,28 @@ export interface ConnectManifest {
     };
     objects: ManifestObject[];
     actions: ManifestAction[];
-    tools: CustomToolDefinition[];
+    tools: ManifestTool[];
     base_tools: string[];
+    analysis?: ManifestAnalysis;
     instructions?: string;
     skill?: string;
 }
 /** One validated tool, with what the validator derived about it. */
 export interface ValidatedManifestTool {
+    /** The definition as stored: without `enabled` / `transports`. */
     definition: CustomToolDefinition;
     baseTool: string;
     mutates: boolean;
     dataFlow: CustomToolDataFlow;
+    /** What the tool uses, for consent copy (see TOOL_CAPABILITIES in tools/custom.ts). */
+    capabilities: ToolCapability[];
+    /** The visibility the manifest asks for, defaults filled (SUP-954). */
+    visibility: ToolVisibility;
 }
+/** A manifest's `analysis`, with both keys filled (absent = false). */
+export declare function requestedAnalysis(m: Pick<ConnectManifest, "analysis"> | null | undefined): RequestedAnalysis;
+/** A manifest tool's requested visibility, defaults filled: on, on both transports. */
+export declare function manifestToolVisibility(t: Pick<ManifestTool, "enabled" | "transports">): ToolVisibility;
 export type ManifestValidation = {
     ok: true;
     manifest: ConnectManifest;
