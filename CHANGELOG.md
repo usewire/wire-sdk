@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.8.1
+
+- Vendors the manifest validator at usewire/wire@429678f (SUP-957): a manifest can set
+  `builtin_tools` to show or hide Wire's built-in tools (`wire_explore`, `wire_navigate`,
+  `wire_search`, `wire_write`, `wire_delete`, `wire_query`, `wire_status`, `wire_export`),
+  with the same `enabled` / `transports` shape as app tools. Installing an app makes the
+  container app-managed: the manifest sets its tools and analysis, one app per container.
+- Connect action calls are free; a tool call costs what its base tool costs.
+
 ## 0.8.0
 
 - `@usewire/sdk/app`, a separate entry point for Connect apps (SUP-946):
