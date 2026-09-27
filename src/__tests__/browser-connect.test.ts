@@ -54,9 +54,11 @@ describe('connectInBrowser / completeConnectInBrowser', () => {
     const loc = fakeLocation('https://my-agent.example/app');
     vi.stubGlobal('location', loc);
 
-    // Never resolves; give the microtask queue a tick then inspect.
+    // Never resolves. Wait for the navigation itself: one timer tick is not
+    // always enough for the PKCE digest, and a navigation that lands after
+    // afterEach has unstubbed `location` fails the run.
     void client.connectInBrowser({ redirectUri: 'https://my-agent.example/callback' });
-    await new Promise((r) => setTimeout(r, 0));
+    await vi.waitFor(() => expect(loc.assign).toHaveBeenCalled());
 
     expect(loc.assign).toHaveBeenCalledTimes(1);
     const target = new URL(loc.assign.mock.calls[0][0] as string);
