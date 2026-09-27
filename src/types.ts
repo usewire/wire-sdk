@@ -168,11 +168,31 @@ export interface StatusSnapshot {
   };
 }
 
+/** Result of WireClient.registerManifest(). */
+export interface ManifestRegistration {
+  /** The manifest's `app.id` (your agent id). */
+  appId: string;
+  /** The manifest's `app.version`, as Wire recorded it. */
+  version: string;
+  /** SHA-256 (hex) of the canonical JSON of the normalized manifest. */
+  hash: string;
+  /** Whether this call stored a new manifest, replaced one, or matched what was stored. */
+  status: 'created' | 'updated' | 'unchanged';
+  /** Custom tools the manifest installs. */
+  tools: string[];
+  /** Base tools kept visible to the app's grant. */
+  baseTools: string[];
+  /** Each action and the host Wire will call. */
+  actions: { name: string; host: string }[];
+}
+
 export class WireSdkError extends Error {
   constructor(
     public code: string,
     message: string,
-    public status?: number
+    public status?: number,
+    /** Structured detail from the server, e.g. `{ errors: [{ path, message }] }` for INVALID_MANIFEST. */
+    public details?: unknown
   ) {
     super(message);
     this.name = 'WireSdkError';

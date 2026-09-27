@@ -8,11 +8,16 @@
  *   and manages containers in your own organization — containers.create /
  *   list / update / delete, plus whoami.
  *
+ * The app side (verifying Wire's calls to a Connect app's actions, serving
+ * them, typing the manifest) lives on the separate `@usewire/sdk/app` entry
+ * so this one stays small. `WireClient.registerManifest()` is here because it
+ * is an app→Wire call like connect.
+ *
  * The SDK is stateless. connect() returns a Connection with everything
  * you need (mcpUrl, apiKey, deviceKey, container metadata). The caller
  * decides what to persist and where.
  */
-export { WireClient } from './client.js';
+export { WireClient, MANIFEST_REGISTER_PATH } from './client.js';
 export type { WireClientOptions } from './client.js';
 
 export { WireProvisionClient } from './provision.js';
@@ -30,8 +35,13 @@ export type {
   Connection,
   ConnectOptions,
   DeviceKey,
+  ManifestRegistration,
   PendingConnection,
   StatusSnapshot,
 } from './types.js';
 
 export { WireSdkError } from './types.js';
+
+// Type-only: the manifest shape registerManifest() takes. The runtime lives
+// on @usewire/sdk/app.
+export type { WireManifest } from './app/manifest.js';

@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- `@usewire/sdk/app`, a separate entry point for Connect apps (SUP-946):
+  `defineManifest`, `defineAction` (with Hono and Node adapters),
+  `verifyWireAction`, `MemoryReplayStore`. Verifies Wire's Ed25519-signed
+  action calls against Wire's JWKS. The root entry does not import it.
+- `WireClient.registerManifest()` registers a Connect app manifest, signed
+  with the agent's key and bound to the request body.
+- The manifest format, the action-call claim names and the registration
+  endpoint are provisional until the matching Wire release.
+
 ## 0.7.0
 
 - Removed case containers (the `container.case(id)` / `container.cases` surface on

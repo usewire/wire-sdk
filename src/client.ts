@@ -27,6 +27,7 @@
  * To reuse the same install identity across connects, persist
  * Connection.deviceKey and pass it back via `new WireClient({ deviceKey })`.
  */
+import type { WireManifest } from './app/manifest.js';
 import { generateDeviceKey, signConnectJwt } from './crypto.js';
 import {
   type BrowserConnectOptions,
@@ -36,6 +37,7 @@ import {
   type Connection,
   type ConnectOptions,
   type DeviceKey,
+  type ManifestRegistration,
   type PendingConnection,
   type StatusSnapshot,
   WireSdkError,
@@ -53,6 +55,14 @@ const OAUTH_TOKEN_PATH = '/api/auth/oauth2/token';
 const OAUTH_SCOPE = 'containers:read containers:write';
 const BROWSER_CONNECT_STORAGE_KEY = 'wire-sdk:browser-connect';
 const BROWSER_CONNECT_MESSAGE_TYPE = 'wire-sdk:browser-connect-result';
+
+/**
+ * Manifest registration (SUP-946). PENDING: the wire-platform SUP-946 PR
+ * serves this endpoint; the path is provisional until it lands. Authorized by
+ * a JWT signed with one of the agent's PUBLISHER keys (the connect JWT
+ * scheme, kid = the publisher key id), with a hash of the body bound into it.
+ */
+export const MANIFEST_REGISTER_PATH = '/api/v1/sdk/manifest';
 
 export interface WireClientOptions {
   /** Agent id registered with Wire (e.g., 'wire-memory'). Required. */
@@ -113,10 +123,20 @@ interface StatusResponseData {
   app: { id: string; name: string; verified: boolean };
 }
 
+interface ManifestRegistrationData {
+  app_id: string;
+  version: string;
+  hash: string;
+  status: 'created' | 'updated' | 'unchanged';
+  tools?: string[];
+  base_tools?: string[];
+  actions?: { name: string; host: string }[];
+}
+
 interface ApiEnvelope<T> {
   success: boolean;
   data?: T;
-  error?: { code: string; message: string };
+  error?: { code: string; message: string; details?: unknown };
 }
 
 export class WireClient {
@@ -564,6 +584,59 @@ export class WireClient {
     }
   }
 
+  /**
+   * Register (or update) this agent's Connect app manifest with Wire.
+   *
+   * Signed with the same Ed25519 JWT scheme as connect(), plus a
+   * `body_sha256` claim binding the exact request body, but the key must be
+   * one of the agent's PUBLISHER keys (added to the agent in the Wire
+   * dashboard): pass it as `deviceKey`, with its id as `credentialId`. An
+   * install's device key is refused, since anyone can bootstrap one for any
+   * agent id. `manifest.app.id` must equal this client's `agentId`.
+   *
+   * Validation happens on Wire: a refused manifest throws WireSdkError with
+   * code INVALID_MANIFEST and `details.errors` naming each offending path.
+   * Re-registering an identical document answers status "unchanged".
+   */
+  async registerManifest(manifest: WireManifest): Promise<ManifestRegistration> {
+    const deviceKey = this.providedDeviceKey;
+    if (!deviceKey?.credentialId) {
+      throw new WireSdkError(
+        'NO_CREDENTIAL',
+        "registerManifest needs the agent's publisher key: new WireClient({ agentId, deviceKey: { privateJwk, publicKey, credentialId } })"
+      );
+    }
+    if (manifest?.app?.id !== this.agentId) {
+      throw new WireSdkError(
+        'AGENT_MISMATCH',
+        `manifest.app.id ("${manifest?.app?.id}") must equal agentId ("${this.agentId}")`
+      );
+    }
+
+    const body = JSON.stringify({ manifest });
+    const jwt = await signConnectJwt({
+      agentId: this.agentId,
+      privateJwk: deviceKey.privateJwk,
+      credentialId: deviceKey.credentialId,
+      claims: { body_sha256: await sha256Base64Url(body) },
+    });
+    const res = await fetch(`${this.base}${MANIFEST_REGISTER_PATH}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${jwt}` },
+      body,
+    });
+    const data = await unwrap<ManifestRegistrationData>(res);
+    return {
+      appId: data.app_id,
+      version: data.version,
+      hash: data.hash,
+      status: data.status,
+      tools: data.tools ?? [],
+      baseTools: data.base_tools ?? [],
+      actions: data.actions ?? [],
+    };
+  }
+
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
@@ -622,6 +695,17 @@ function generateRandomUrlSafe(bytes: number): string {
   const buf = new Uint8Array(bytes);
   crypto.getRandomValues(buf);
   return btoa(String.fromCharCode(...buf))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+}
+
+/** base64url SHA-256 of a UTF-8 string (the body hash bound into signed calls). */
+async function sha256Base64Url(text: string): Promise<string> {
+  const hash = new Uint8Array(
+    await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))
+  );
+  return btoa(String.fromCharCode(...hash))
     .replace(/\+/g, '-')
     .replace(/\//g, '_')
     .replace(/=+$/, '');
@@ -705,7 +789,7 @@ async function unwrap<T>(res: Response): Promise<T> {
   if (!res.ok || !json.success || !json.data) {
     const code = json.error?.code ?? `HTTP_${res.status}`;
     const message = json.error?.message ?? `Request failed: ${res.status}`;
-    throw new WireSdkError(code, message, res.status);
+    throw new WireSdkError(code, message, res.status, json.error?.details);
   }
   return json.data;
 }

@@ -1,0 +1,86 @@
+/**
+ * The app side ships as its own subpath, and the root entry does not grow.
+ * Runs against the built package (dist/), resolved by package name through
+ * the exports map exactly as a consumer would.
+ */
+import { execFileSync } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { beforeAll, describe, expect, it } from 'vitest';
+
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+const dist = join(root, 'dist');
+
+beforeAll(() => {
+  if (!existsSync(join(dist, 'app/index.js'))) {
+    execFileSync('npx', ['tsc'], { cwd: root, stdio: 'inherit' });
+  }
+}, 120_000);
+
+function importByName(specifier: string): string[] {
+  // Self-reference: Node resolves the package's own name through its exports map.
+  const out = execFileSync(
+    process.execPath,
+    ['--input-type=module', '-e', `const m = await import(${JSON.stringify(specifier)}); console.log(JSON.stringify(Object.keys(m).sort()));`],
+    { cwd: root, encoding: 'utf8' }
+  );
+  return JSON.parse(out) as string[];
+}
+
+/** Every file reachable from `entry` through relative imports, plus bare specifiers. */
+function importGraph(entry: string): { files: Set<string>; packages: Set<string> } {
+  const files = new Set<string>();
+  const packages = new Set<string>();
+  const visit = (file: string) => {
+    if (files.has(file)) return;
+    files.add(file);
+    const src = readFileSync(file, 'utf8');
+    for (const m of src.matchAll(/(?:import|export)\s[^'"]*?from\s+['"]([^'"]+)['"]|import\(\s*['"]([^'"]+)['"]\s*\)/g)) {
+      const spec = m[1] ?? m[2]!;
+      if (spec.startsWith('.')) visit(resolve(dirname(file), spec));
+      else packages.add(spec);
+    }
+  };
+  visit(entry);
+  return { files, packages };
+}
+
+describe('package exports', () => {
+  it('@usewire/sdk/app exposes the app side', () => {
+    const names = importByName('@usewire/sdk/app');
+    for (const name of [
+      'defineAction',
+      'defineManifest',
+      'verifyWireAction',
+      'toNodeHandler',
+      'MemoryReplayStore',
+      'WireActionAuthError',
+      'WireActionError',
+      'WireManifestError',
+      'DEFAULT_WIRE_JWKS_URL',
+    ]) {
+      expect(names).toContain(name);
+    }
+  });
+
+  it('@usewire/sdk still exposes the connection manager, and not the app side', () => {
+    const names = importByName('@usewire/sdk');
+    expect(names).toContain('WireClient');
+    expect(names).toContain('WireProvisionClient');
+    expect(names).not.toContain('defineAction');
+    expect(names).not.toContain('verifyWireAction');
+  });
+
+  it("the root entry's runtime import graph does not reach the app side", () => {
+    const { files, packages } = importGraph(join(dist, 'index.js'));
+    expect([...files].some((f) => f.includes(`${join(dist, 'app')}`))).toBe(false);
+    expect(packages.has('@cfworker/json-schema')).toBe(false);
+  });
+
+  it('declares types for the subpath', () => {
+    const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+    expect(pkg.exports['./app'].types).toBe('./dist/app/index.d.ts');
+    expect(existsSync(join(root, pkg.exports['./app'].types))).toBe(true);
+  });
+});
