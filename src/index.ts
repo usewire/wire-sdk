@@ -17,7 +17,12 @@
  * you need (mcpUrl, apiKey, deviceKey, container metadata). The caller
  * decides what to persist and where.
  */
-export { WireClient, MANIFEST_REGISTER_PATH } from './client.js';
+export {
+  WireClient,
+  MANIFEST_JWT_AUDIENCE,
+  MANIFEST_REGISTER_PATH,
+  MANIFEST_VALIDATOR_HEADER,
+} from './client.js';
 export type { WireClientOptions } from './client.js';
 
 export { WireProvisionClient } from './provision.js';

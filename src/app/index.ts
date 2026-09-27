@@ -25,6 +25,10 @@ export type {
 } from './action.js';
 
 export { defineManifest, MANIFEST_VERSION, MAX_ACTION_TIMEOUT_MS } from './manifest.js';
+/** The engine's manifest validator itself (vendored at MANIFEST_REF), for tooling and CI checks. */
+export { validateManifest } from '../vendor/manifest/manifest.js';
+export type { ConnectManifest, ManifestValidation } from '../vendor/manifest/manifest.js';
+export { MANIFEST_VALIDATOR_REF } from '../vendor/manifest/ref.js';
 export type {
   ActionName,
   DefinedManifest,
@@ -39,6 +43,7 @@ export type {
 
 export {
   verifyWireAction,
+  normalizeActionUrl,
   sha256Base64Url,
   DEFAULT_CLOCK_TOLERANCE_SEC,
   DEFAULT_MAX_BODY_BYTES,

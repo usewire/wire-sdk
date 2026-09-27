@@ -201,7 +201,7 @@ import { defineManifest } from '@usewire/sdk/app';
 
 export const manifest = defineManifest({
   manifest: 1,
-  app: { id: 'geo-app', name: 'Geo App', version: '0.1.0' },
+  app: { id: 'geo_app', name: 'Geo App', version: '0.1.0' },
   actions: [
     {
       name: 'geocode',
@@ -247,38 +247,83 @@ export const manifest = defineManifest({
 });
 ```
 
-- `app.id` is the agent id you registered with Wire, lowercase. It is also the
-  audience of every action call, so a call meant for another app never
-  verifies in yours.
+- `app.id` is the agent id you registered with Wire: lowercase letters, digits
+  and underscores. It is also the audience of every action call, so a call
+  meant for another app never verifies in yours.
 - Every action needs a plain `description`. The user sees it on the consent
   screen, so say what the action receives and whether you keep it.
-- `url` must be https. `timeout_ms` is capped at 8000.
+- `url` must be https on a public host. Wire calls exactly this URL and signs
+  it into every call. `timeout_ms` defaults to, and is capped at, 8000.
 - An action receives only the fields its tool's mapping sends it.
 
-`defineManifest` checks locally what your action endpoints depend on and
-throws `WireManifestError` listing every problem. Wire runs the full
-validation (tool mappings, reserved names, limits) when you register.
+`defineManifest` runs Wire's own manifest validator, the same one Wire runs
+when you register and a container runs when it installs your app, so a
+manifest that passes locally is one Wire accepts. It returns the normalized
+manifest (defaults filled in) or throws `WireManifestError` listing every
+problem with its path, such as `actions.0.url`. `validateManifest` is exported
+too, for a CI check that returns errors instead of throwing.
+
+The validator is a copy of Wire's, pinned to a Wire release. `MANIFEST_VALIDATOR_REF`
+says which, and `registerManifest` sends it (`X-Wire-Manifest-Validator`), so Wire can tell you when your SDK
+is behind.
 
 ### Register it
 
-Registration is signed the same way as `connect()`, with an Ed25519 key, but
-it must be one of your agent's **publisher keys**: a key added to the agent in
-the Wire dashboard by someone who can manage it. An install's device key
-cannot register a manifest, since anyone can create one for any agent id. Pass
-the publisher key as the `deviceKey`, with its id as `credentialId`.
+Registration is signed with one of your agent's **publisher keys**, an Ed25519
+key you add to the agent. An install's device key cannot register a manifest,
+since anyone can create one for any agent id.
+
+**1. Create a publisher key.** Generate a keypair and keep the private half
+secret, as you would any deploy credential:
+
+```typescript
+import { exportJWK, generateKeyPair } from 'jose';
+
+const { privateKey, publicKey } = await generateKeyPair('EdDSA', { crv: 'Ed25519', extractable: true });
+const privateJwk = await exportJWK(privateKey); // store this in your secrets manager
+const publicKeyB64 = (await exportJWK(publicKey)).x!; // 43-character base64url
+```
+
+Then add the public half to the agent. This needs a signed-in member of the
+agent's organization with permission to update it (`organization: update`):
+
+```http
+POST https://app.usewire.io/api/v1/agents/<agent id>/publisher-keys
+Content-Type: application/json
+
+{ "publicKey": "<publicKeyB64>", "label": "CI deploy key" }
+```
+
+The answer is `{ "id": "pk_…" }`. `GET` on the same path lists the agent's
+publisher keys, and `DELETE …/publisher-keys/<id>` revokes one.
+
+**2. Register.** Pass the publisher key as the client's `deviceKey`, with its
+`pk_…` id as `credentialId`:
 
 ```typescript
 import { WireClient } from '@usewire/sdk';
 import { manifest } from './manifest';
 
-const client = new WireClient({ agentId: 'geo-app', deviceKey: loadPublisherKey() });
+const client = new WireClient({
+  agentId: 'geo-app',
+  deviceKey: { privateJwk, publicKey: publicKeyB64, credentialId: 'pk_…' },
+});
 const registered = await client.registerManifest(manifest);
 // { appId, version, hash, status: 'created' | 'updated' | 'unchanged', tools, baseTools, actions }
 ```
 
+`manifest.app.id` must be your agent id with `-` changed to `_` (agent
+`geo-app`, app id `geo_app`), because app ids become tool-name prefixes.
+
 Registering an identical document again answers `unchanged`. Bump
-`app.version` to ship a change. A refused manifest throws `WireSdkError` with
-code `INVALID_MANIFEST` and `details.errors`, each naming its path.
+`app.version` to ship a change. Errors throw `WireSdkError`:
+
+| Status | Code | Meaning |
+|---|---|---|
+| 422 | `INVALID_MANIFEST` | `details.errors` lists each problem with its path |
+| 409 | | this `app.version` is already registered with different content |
+| 503 | | manifest registration is not available on this environment yet |
+| 401 | | the key is not a live publisher key of this agent |
 
 ### Serve an action (Cloudflare Worker)
 
@@ -320,10 +365,25 @@ and `signal`. Throw `WireActionError` for an error the agent should see.
 Anything else thrown becomes a generic 500, so internals never reach the agent.
 
 **Hono:** `app.post('/geocode', geocode.hono)`.
-**Node:** `http.createServer(toNodeHandler(geocode))`, or
-`app.post('/geocode', toNodeHandler(geocode))` in Express. Mount it before any
-JSON body parser. The signature covers the raw body bytes, and a parsed and
-re-serialized body does not hash the same.
+**Node:** `http.createServer(toNodeHandler(geocode, { origin: 'https://geo-app.example.workers.dev' }))`,
+or `app.post('/geocode', toNodeHandler(geocode, { origin }))` in Express. Mount
+it before any JSON body parser: the signature covers the raw body bytes, and a
+parsed and re-serialized body does not hash the same.
+
+**The URL check.** Every call is signed with the exact URL Wire sent it to
+(`wire_url`, your manifest's action `url`), and it is refused at any other.
+By default the SDK compares it with the URL the request arrived at. That is
+right for a Worker, Bun or Deno serving the public hostname. Behind a proxy,
+load balancer or TLS terminator that changes the scheme, host, port or path
+your code sees, pass the public URL instead: `url` on `defineAction` or
+`verifyWireAction`, or `origin` on `toNodeHandler`. Forwarded headers are not
+trusted for this, since anyone can send them.
+
+Both URLs are parsed and compared as `scheme://host[:port]/path?query`: the
+scheme and host are case-insensitive, a default port (443, 80) is dropped, `.`
+and `..` segments are resolved and the fragment is ignored. Everything else
+counts, including the case of the path, a trailing slash, percent-encoding and
+the order of the query. `normalizeActionUrl` is the exact rule.
 
 A few things worth knowing:
 
@@ -340,16 +400,17 @@ A few things worth knowing:
   elsewhere.
 
 To verify inside a server you already have, call the check on its own.
-`action` is required: the request path is not signed, so without it a call
-Wire made to another of your actions would verify here too.
+`action` is required, so a call Wire made to another of your actions never
+verifies here.
 
 ```typescript
 import { verifyWireAction, WireActionAuthError } from '@usewire/sdk/app';
 
 try {
   const { connectionId, containerId, action } = await verifyWireAction(request, {
-    appId: 'geo-app',
+    appId: 'geo_app',
     action: 'geocode',
+    // url: 'https://geo-app.example.workers.dev/geocode', // behind a proxy
   });
   const input = await request.json(); // still readable: verification reads a clone
 } catch (err) {
@@ -393,7 +454,8 @@ Any language with an EdDSA-capable JWT library can verify an action call.
 1. Read `Authorization: Bearer <jwt>`.
 2. Refuse unless the header has `alg: "EdDSA"`, `typ: "wire-action+jwt"` and a `kid`.
 3. Verify the signature with the key of that `kid` from Wire's JWKS,
-   `https://api.usewire.io/.well-known/wire-actions-jwks.json`. Cache it for up
+   `https://app.usewire.io/.well-known/wire-actions-jwks.json` (preview:
+   `https://preview.app.usewire.io/.well-known/wire-actions-jwks.json`). Cache it for up
    to 5 minutes; refetch on an unknown `kid`, at most every 30 seconds. Never
    take a key or a key URL from the token itself.
 4. Check the claims:
@@ -405,6 +467,7 @@ Any language with an EdDSA-capable JWT library can verify an action call.
    | `sub` | the connection id |
    | `wire_container` | the container the call comes from |
    | `wire_action` | the action this endpoint serves |
+   | `wire_url` | the public URL of this endpoint (compare normalized, as above) |
    | `iat`, `exp` | not expired, not issued in the future (allow up to 30 s of skew), `exp - iat <= 60` |
    | `jti` | not seen before; remember it until `exp` plus the skew has passed |
    | `wire_body_sha256` | base64url (no padding) SHA-256 of the raw request body bytes |
@@ -417,9 +480,9 @@ Any language with an EdDSA-capable JWT library can verify an action call.
 ```typescript
 import { createRemoteJWKSet, jwtVerify } from 'jose';
 
-const JWKS = createRemoteJWKSet(new URL('https://api.usewire.io/.well-known/wire-actions-jwks.json'));
+const JWKS = createRemoteJWKSet(new URL('https://app.usewire.io/.well-known/wire-actions-jwks.json'));
 
-async function verify(request: Request, appId: string) {
+async function verify(request: Request, appId: string, action: string, publicUrl: string) {
   const token = request.headers.get('authorization')?.replace(/^Bearer /, '') ?? '';
   const { payload } = await jwtVerify(token, JWKS, {
     algorithms: ['EdDSA'],
@@ -428,9 +491,12 @@ async function verify(request: Request, appId: string) {
     audience: appId,
     clockTolerance: 30,
     maxTokenAge: 90,
-    requiredClaims: ['sub', 'jti', 'iat', 'exp', 'wire_container', 'wire_action', 'wire_body_sha256'],
+    requiredClaims: ['sub', 'jti', 'iat', 'exp', 'wire_container', 'wire_action', 'wire_url', 'wire_body_sha256'],
   });
   if (payload.aud !== appId || payload.exp! - payload.iat! > 60) throw new Error('bad token');
+  if (payload.wire_action !== action) throw new Error('token is for another action');
+  const norm = (u: string) => { const x = new URL(u); return `${x.protocol}//${x.host}${x.pathname}${x.search}`; };
+  if (norm(payload.wire_url as string) !== norm(publicUrl)) throw new Error('token is for another URL');
 
   const body = new Uint8Array(await request.arrayBuffer());
   const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', body));

@@ -24,7 +24,7 @@ import {
 
 const manifest = defineManifest({
   manifest: 1,
-  app: { id: 'geo-app', name: 'Geo App', version: '0.1.0' },
+  app: { id: 'geo_app', name: 'Geo App', version: '0.1.0' },
   actions: [
     {
       name: 'geocode',
@@ -55,7 +55,7 @@ const manifest = defineManifest({
     {
       name: 'save_place',
       description: 'Save a place.',
-      inputSchema: { type: 'object', properties: { address: { type: 'string' } } },
+      inputSchema: { type: 'object', properties: { address: { type: 'string' } }, required: ['address'] },
       before: { action: 'geocode', args: { address: '{{input.address}}' } },
       tool: { name: 'wire_write', args: { content: '{{input.address}}' } },
     },
@@ -212,7 +212,7 @@ describe('defineAction', () => {
   it('checks a manifest that did not come through defineManifest', () => {
     const raw = {
       manifest: 1 as const,
-      app: { id: 'geo-app', name: 'Geo', version: '1' },
+      app: { id: 'geo_app', name: 'Geo', version: '1' },
       actions: [{ name: 'a', description: 'd', url: 'https://x.example', input: {}, output: {}, timeout_ms: Number.NaN }],
     };
     expect(() => defineAction(raw, 'a', () => ({}))).toThrow(WireManifestError);
@@ -244,6 +244,13 @@ describe('defineAction', () => {
     expect(status).toBe(500);
   });
 
+  it('checks wire_url against the url option instead of the request URL', async () => {
+    const geocode = defineAction(manifest, 'geocode', () => ({ lat: 1, lng: 2 }), options({ url: 'https://geo-app.example/geocode' }));
+    const token = await signAction({ key, body: BODY });
+    const res = await geocode.fetch(actionRequest(token, BODY, { url: 'http://internal:8080/v1/geocode' }));
+    expect(res.status).toBe(200);
+  });
+
   it('serves through the Hono shape', async () => {
     const geocode = defineAction(manifest, 'geocode', () => ({ lat: 1, lng: 2 }), options());
     const token = await signAction({ key, body: BODY });
@@ -251,12 +258,25 @@ describe('defineAction', () => {
     expect(res.status).toBe(200);
   });
 
-  it('serves through the Node (req, res) adapter', async () => {
+  it('serves through the Node (req, res) adapter, with the public origin given', async () => {
     const geocode = defineAction(manifest, 'geocode', () => ({ lat: 1, lng: 2 }), options());
-    const http = createServer(toNodeHandler(geocode));
+    // A Node server behind TLS termination sees http://127.0.0.1:port; Wire
+    // signed https://geo-app.example/geocode.
+    const plain = createServer(toNodeHandler(geocode));
+    const http = createServer(toNodeHandler(geocode, { origin: 'https://geo-app.example' }));
+    await new Promise<void>((r) => plain.listen(0, '127.0.0.1', r));
     await new Promise<void>((r) => http.listen(0, '127.0.0.1', r));
     const { port } = http.address() as AddressInfo;
+    const plainPort = (plain.address() as AddressInfo).port;
     try {
+      const withoutOrigin = await fetch(`http://127.0.0.1:${plainPort}/geocode`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${await signAction({ key, body: BODY })}` },
+        body: BODY,
+      });
+      expect(withoutOrigin.status).toBe(401);
+      expect(((await withoutOrigin.json()) as any).error.code).toBe('URL_MISMATCH');
+
       const token = await signAction({ key, body: BODY });
       const ok = await fetch(`http://127.0.0.1:${port}/geocode`, {
         method: 'POST',
@@ -274,6 +294,7 @@ describe('defineAction', () => {
       expect(tampered.status).toBe(401);
     } finally {
       await new Promise<void>((r) => http.close(() => r()));
+      await new Promise<void>((r) => plain.close(() => r()));
     }
   });
 });
@@ -281,7 +302,7 @@ describe('defineAction', () => {
 describe('defineManifest', () => {
   const valid = {
     manifest: 1 as const,
-    app: { id: 'geo-app', name: 'Geo App', version: '0.1.0' },
+    app: { id: 'geo_app', name: 'Geo App', version: '0.1.0' },
     actions: [
       {
         name: 'geocode',
@@ -293,26 +314,30 @@ describe('defineManifest', () => {
     ],
   };
 
-  it('returns a frozen copy of a valid manifest', () => {
+  it("returns the engine's normalized manifest, frozen, without touching the input", () => {
     const m = defineManifest(valid);
-    expect(m).toEqual(valid);
+    expect(m.app).toEqual(valid.app);
+    expect(m.actions![0]).toMatchObject({ ...valid.actions[0], method: 'POST', timeout_ms: 8000 });
     expect(Object.isFrozen(m.actions![0]!.input)).toBe(true);
     expect(Object.isFrozen(valid)).toBe(false);
+    expect((valid.actions[0] as Record<string, unknown>).timeout_ms).toBeUndefined();
   });
 
   it.each([
     ['wrong format version', { ...valid, manifest: 2 }, 'manifest'],
     ['missing app', { ...valid, app: undefined }, 'app'],
-    ['an action without a description', { ...valid, actions: [{ ...valid.actions[0], description: ' ' }] }, 'actions[0].description'],
-    ['a non-https action URL', { ...valid, actions: [{ ...valid.actions[0], url: 'http://geo-app.example/x' }] }, 'actions[0].url'],
-    ['a timeout over 8 seconds', { ...valid, actions: [{ ...valid.actions[0], timeout_ms: 30_000 }] }, 'actions[0].timeout_ms'],
-    ['duplicate action names', { ...valid, actions: [valid.actions[0], valid.actions[0]] }, 'actions[1].name'],
-    ['a missing output schema', { ...valid, actions: [{ ...valid.actions[0], output: undefined }] }, 'actions[0].output'],
+    ['an action without a description', { ...valid, actions: [{ ...valid.actions[0], description: ' ' }] }, 'actions.0.description'],
+    ['a non-https action URL', { ...valid, actions: [{ ...valid.actions[0], url: 'http://geo-app.example/x' }] }, 'actions.0.url'],
+    ['a private-address action URL', { ...valid, actions: [{ ...valid.actions[0], url: 'https://10.0.0.1/x' }] }, 'actions.0.url'],
+    ['a timeout over 8 seconds', { ...valid, actions: [{ ...valid.actions[0], timeout_ms: 30_000 }] }, 'actions.0.timeout_ms'],
+    ['duplicate action names', { ...valid, actions: [valid.actions[0], valid.actions[0]] }, 'actions.1.name'],
+    ['a missing output schema', { ...valid, actions: [{ ...valid.actions[0], output: undefined }] }, 'actions.0.output'],
     [
-      'a schema property that shadows an Object.prototype member',
-      { ...valid, actions: [{ ...valid.actions[0], input: { type: 'object', required: ['constructor'] } }] },
-      'actions[0].input',
+      'a schema keyword outside the supported subset',
+      { ...valid, actions: [{ ...valid.actions[0], input: { type: 'object', patternProperties: { x: {} } } }] },
+      'actions.0.input',
     ],
+    ['an unknown top-level field', { ...valid, extra: true }, 'extra'],
     [
       'a tool that references an undeclared action',
       {
@@ -327,7 +352,7 @@ describe('defineManifest', () => {
           },
         ],
       },
-      'tools[0].before.action',
+      'tools.0',
     ],
   ])('rejects %s', (_label, manifest, path) => {
     let err: unknown;
@@ -337,6 +362,6 @@ describe('defineManifest', () => {
       err = e;
     }
     expect(err).toBeInstanceOf(WireManifestError);
-    expect((err as WireManifestError).issues.map((i) => i.path)).toContain(path);
+    expect((err as WireManifestError).issues.some((i) => i.path === path || i.path.startsWith(`${path}.`))).toBe(true);
   });
 });

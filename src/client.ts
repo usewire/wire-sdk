@@ -29,6 +29,8 @@
  */
 import type { WireManifest } from './app/manifest.js';
 import { generateDeviceKey, signConnectJwt } from './crypto.js';
+// A one-line constant, not the validator: the root entry stays small.
+import { MANIFEST_VALIDATOR_REF } from './vendor/manifest/ref.js';
 import {
   type BrowserConnectOptions,
   type ClaimLink,
@@ -57,12 +59,17 @@ const BROWSER_CONNECT_STORAGE_KEY = 'wire-sdk:browser-connect';
 const BROWSER_CONNECT_MESSAGE_TYPE = 'wire-sdk:browser-connect-result';
 
 /**
- * Manifest registration (SUP-946). PENDING: the wire-platform SUP-946 PR
- * serves this endpoint; the path is provisional until it lands. Authorized by
- * a JWT signed with one of the agent's PUBLISHER keys (the connect JWT
- * scheme, kid = the publisher key id), with a hash of the body bound into it.
+ * Manifest registration (SUP-946, wire-platform#758). POST, body
+ * `{ manifest }`. Authorized by an EdDSA JWT signed with one of the agent's
+ * PUBLISHER keys: kid = the publisher key id (`pk_…`), iss = the agent id,
+ * aud = MANIFEST_JWT_AUDIENCE, a `body_sha256` claim over the exact body
+ * bytes, jti, and a lifetime of at most 60 s.
  */
 export const MANIFEST_REGISTER_PATH = '/api/v1/sdk/manifest';
+/** The `aud` of a manifest registration JWT: distinct from connect's 'wire-api', so neither can stand in for the other. */
+export const MANIFEST_JWT_AUDIENCE = 'wire-manifest';
+/** Advisory header naming the engine commit the SDK's manifest validator was built from. */
+export const MANIFEST_VALIDATOR_HEADER = 'X-Wire-Manifest-Validator';
 
 export interface WireClientOptions {
   /** Agent id registered with Wire (e.g., 'wire-memory'). Required. */
@@ -587,16 +594,21 @@ export class WireClient {
   /**
    * Register (or update) this agent's Connect app manifest with Wire.
    *
-   * Signed with the same Ed25519 JWT scheme as connect(), plus a
-   * `body_sha256` claim binding the exact request body, but the key must be
-   * one of the agent's PUBLISHER keys (added to the agent in the Wire
-   * dashboard): pass it as `deviceKey`, with its id as `credentialId`. An
+   * Signed with an Ed25519 JWT (aud 'wire-manifest', plus a `body_sha256`
+   * claim binding the exact request body) by one of the agent's PUBLISHER
+   * keys: pass it as `deviceKey`, with its `pk_…` id as `credentialId`. An
    * install's device key is refused, since anyone can bootstrap one for any
-   * agent id. `manifest.app.id` must equal this client's `agentId`.
+   * agent id. `manifest.app.id` must equal this client's `agentId` with `-`
+   * changed to `_` (app ids are tool-name prefixes).
    *
-   * Validation happens on Wire: a refused manifest throws WireSdkError with
-   * code INVALID_MANIFEST and `details.errors` naming each offending path.
+   * Validation happens on Wire. Errors throw WireSdkError:
+   *   - 422 INVALID_MANIFEST, `details.errors` naming each offending path;
+   *   - 409 when this `app.version` is already registered with different content;
+   *   - 503 while the manifest registry is not available.
    * Re-registering an identical document answers status "unchanged".
+   *
+   * Also sends X-Wire-Manifest-Validator: the engine commit this SDK's
+   * defineManifest() validated against, so Wire can warn when it is behind.
    */
   async registerManifest(manifest: WireManifest): Promise<ManifestRegistration> {
     const deviceKey = this.providedDeviceKey;
@@ -606,10 +618,11 @@ export class WireClient {
         "registerManifest needs the agent's publisher key: new WireClient({ agentId, deviceKey: { privateJwk, publicKey, credentialId } })"
       );
     }
-    if (manifest?.app?.id !== this.agentId) {
+    const expectedAppId = this.agentId.replace(/-/g, '_');
+    if (manifest?.app?.id !== expectedAppId) {
       throw new WireSdkError(
         'AGENT_MISMATCH',
-        `manifest.app.id ("${manifest?.app?.id}") must equal agentId ("${this.agentId}")`
+        `manifest.app.id ("${manifest?.app?.id}") must be "${expectedAppId}" (the agent id with - as _)`
       );
     }
 
@@ -618,11 +631,16 @@ export class WireClient {
       agentId: this.agentId,
       privateJwk: deviceKey.privateJwk,
       credentialId: deviceKey.credentialId,
+      audience: MANIFEST_JWT_AUDIENCE,
       claims: { body_sha256: await sha256Base64Url(body) },
     });
     const res = await fetch(`${this.base}${MANIFEST_REGISTER_PATH}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${jwt}` },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${jwt}`,
+        [MANIFEST_VALIDATOR_HEADER]: MANIFEST_VALIDATOR_REF,
+      },
       body,
     });
     const data = await unwrap<ManifestRegistrationData>(res);

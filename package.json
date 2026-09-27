@@ -47,18 +47,18 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node scripts/copy-vendor.mjs",
     "dev": "tsc --watch",
     "clean": "rm -rf dist",
     "test": "vitest run",
     "type-check": "tsc --noEmit",
-    "prepublishOnly": "npm run clean && npm run build && npm test"
+    "prepublishOnly": "npm run clean && npm run build && npm test",
+    "vendor:manifest": "scripts/vendor-manifest.sh"
   },
   "engines": {
     "node": ">=18.0.0"
   },
   "dependencies": {
-    "@cfworker/json-schema": "^4.1.1",
     "jose": "^6.1.3"
   },
   "devDependencies": {

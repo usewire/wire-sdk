@@ -76,6 +76,7 @@ export interface SignOptions {
   sub?: string;
   containerId?: string;
   action?: string;
+  url?: string;
   jti?: string;
   iat?: number;
   exp?: number;
@@ -91,10 +92,11 @@ export const NOW_SEC = Math.floor(NOW.getTime() / 1000);
 export async function signAction(o: SignOptions): Promise<string> {
   const payload: Record<string, unknown> = {
     iss: o.iss ?? 'wire',
-    aud: o.aud ?? o.appId ?? 'geo-app',
+    aud: o.aud ?? o.appId ?? 'geo_app',
     sub: o.sub ?? 'conn_123',
     wire_container: o.containerId ?? 'ctr_456',
     wire_action: o.action ?? 'geocode',
+    wire_url: o.url ?? 'https://geo-app.example/geocode',
     jti: o.jti ?? `jti-${Math.random().toString(36).slice(2)}-${Date.now()}`,
     iat: o.iat ?? NOW_SEC,
     exp: o.exp ?? (o.iat ?? NOW_SEC) + 60,

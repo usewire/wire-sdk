@@ -10,8 +10,9 @@
  *   - just now (`iat`/`exp`, at most 60 seconds apart, small clock tolerance);
  *   - once (`jti` recorded in a replay store);
  *   - with THIS body (SHA-256 of the raw body bytes equals the signed hash);
- *   - on behalf of a connection and container (`sub`, the container claim),
- *     for a named action.
+ *   - at THIS URL (`wire_url` names the endpoint the call was sent to);
+ *   - on behalf of a connection and container (`sub`, `wire_container`), for
+ *     a named action (`wire_action`).
  *
  * Only the JWKS URL configured here is trusted. Token headers that point at
  * keys (`jku`, `jwk`, `x5u`, `x5c`) are never consulted, and only EdDSA is
@@ -26,52 +27,63 @@ import {
   type JWTPayload,
   type JWTVerifyGetKey,
 } from 'jose';
+import {
+  ACTION_CLAIM,
+  ACTION_JWT_CLOCK_SKEW_SECONDS,
+  ACTION_JWT_ISSUER,
+  ACTION_JWT_TTL_SECONDS,
+  ACTION_JWT_TYP,
+  ACTION_REQUEST_ID_HEADER,
+} from '../vendor/manifest/manifest.js';
 import { WireActionAuthError } from './errors.js';
 import { defaultReplayStore, type ReplayStore } from './replay.js';
 
 // ─── The wire format ────────────────────────────────────────────────────────
-// The ENGINE owns these (usewire/wire `src/connect/action-claims.ts`, exported
-// on `@usewire/container/manifest`). Mirrored here, not imported, until that
-// subpath is published as a package the SDK can depend on; every name the SDK
-// reads is in this block, so a change is a one-place edit.
+// The ENGINE owns every name here (usewire/wire `src/connect/action-claims.ts`).
+// They are imported from the vendored engine build (src/vendor/manifest,
+// pinned by MANIFEST_REF), never spelled again.
 
 /** `iss` on every action call. */
-export const WIRE_ACTION_ISSUER = 'wire';
+export const WIRE_ACTION_ISSUER: string = ACTION_JWT_ISSUER;
 /** The JWT header `typ` of an action call (explicit typing, RFC 8725 §3.11). */
-export const WIRE_ACTION_JWT_TYP = 'wire-action+jwt';
+export const WIRE_ACTION_JWT_TYP: string = ACTION_JWT_TYP;
 /** Header carrying the id of the tool call an action is part of. NOT signed: correlation only. */
-export const WIRE_REQUEST_ID_HEADER = 'X-Wire-Request-Id';
+export const WIRE_REQUEST_ID_HEADER: string = ACTION_REQUEST_ID_HEADER;
 
 /**
- * Wire's public JWKS for action signing keys, served by the control plane on
- * the API origin (wire-platform SUP-946). Override with `jwksUrl` for preview
- * (`https://api-preview.usewire.io/.well-known/wire-actions-jwks.json`) or a
+ * Wire's public JWKS for action signing keys, served by the control plane
+ * (`Cache-Control: public, max-age=300`; 503 while unconfigured). Override
+ * with `jwksUrl` for preview
+ * (`https://preview.app.usewire.io/.well-known/wire-actions-jwks.json`) or a
  * self-hosted control plane.
  */
-export const DEFAULT_WIRE_JWKS_URL = 'https://api.usewire.io/.well-known/wire-actions-jwks.json';
+export const DEFAULT_WIRE_JWKS_URL = 'https://app.usewire.io/.well-known/wire-actions-jwks.json';
 
 /** Claim names of an action-call JWT. */
 export const WIRE_ACTION_CLAIMS = {
   /** The connection the call is made under (standard `sub`). */
   connectionId: 'sub',
   /** The container the call comes from. */
-  containerId: 'wire_container',
+  containerId: ACTION_CLAIM.container,
   /** The manifest action being called. */
-  action: 'wire_action',
+  action: ACTION_CLAIM.action,
+  /** The exact URL the call was sent to (the manifest's action url). */
+  url: ACTION_CLAIM.url,
   /** base64url (no padding) SHA-256 of the exact request body bytes. */
-  bodyHash: 'wire_body_sha256',
+  bodyHash: ACTION_CLAIM.bodySha256,
 } as const;
 
 /** Longest `exp - iat` accepted. Wire mints 60-second tokens. */
-export const MAX_TOKEN_LIFETIME_SEC = 60;
-/** Default tolerance for clock skew between Wire and the app (the engine's recommended value). */
-export const DEFAULT_CLOCK_TOLERANCE_SEC = 30;
+export const MAX_TOKEN_LIFETIME_SEC: number = ACTION_JWT_TTL_SECONDS;
+/** Default tolerance for clock skew between Wire and the app (the engine's value). */
+export const DEFAULT_CLOCK_TOLERANCE_SEC: number = ACTION_JWT_CLOCK_SKEW_SECONDS;
 /** Default ceiling on the request body read for hashing. */
 export const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 
 const MAX_CLOCK_TOLERANCE_SEC = 60;
 const MAX_TOKEN_CHARS = 8 * 1024;
 const MAX_ID_CHARS = 256;
+const MAX_URL_CHARS = 2048;
 const SHA256_B64URL_RE = /^[A-Za-z0-9_-]{43}$/;
 const BEARER_RE = /^Bearer[ ]+([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)$/i;
 
@@ -85,6 +97,7 @@ export interface WireActionClaims extends JWTPayload {
   exp: number;
   wire_container: string;
   wire_action: string;
+  wire_url: string;
   wire_body_sha256: string;
 }
 
@@ -102,11 +115,20 @@ export interface VerifyWireActionOptions {
    */
   replayStore?: ReplayStore;
   /**
-   * The action this endpoint serves. Required: the request path is not
-   * signed, so without it a token Wire minted for another of your actions
-   * would verify here too. A token for any other action fails ACTION_MISMATCH.
+   * The action this endpoint serves. Required. A token for any other action
+   * fails ACTION_MISMATCH, whatever URL it arrived at.
    */
   action: string;
+  /**
+   * The public URL Wire calls this endpoint at: the action's `url` in your
+   * manifest. Defaults to `request.url`, which is right when the app sees the
+   * request as Wire sent it (a Cloudflare Worker, Bun or Deno serving the
+   * public hostname directly). Set it when a proxy, load balancer or TLS
+   * terminator changes the scheme, host, port or path the app sees; then the
+   * token's `wire_url` is checked against this value instead. See
+   * `normalizeActionUrl` for how the two are compared.
+   */
+  url?: string;
   /** Clock skew tolerance in seconds. Default 30 (what Wire assumes), capped at 60. */
   clockToleranceSec?: number;
   /** Largest body read for hashing. Default 1 MiB; larger bodies fail BODY_TOO_LARGE. */
@@ -157,6 +179,12 @@ export async function verifyWireActionRequest(
   if (!options?.appId) throw new TypeError('verifyWireAction: appId is required');
   if (typeof options.action !== 'string' || !options.action) {
     throw new TypeError('verifyWireAction: action is required (the action this endpoint serves)');
+  }
+  const expectedUrl = normalizeActionUrl(options.url ?? request.url);
+  if (expectedUrl === null) {
+    throw new TypeError(
+      options.url !== undefined ? 'verifyWireAction: url is not an absolute http(s) URL' : 'verifyWireAction: request.url is not an absolute http(s) URL; pass url'
+    );
   }
   const tolerance = Math.min(
     Math.max(0, options.clockToleranceSec ?? DEFAULT_CLOCK_TOLERANCE_SEC),
@@ -213,6 +241,7 @@ export async function verifyWireActionRequest(
         'exp',
         WIRE_ACTION_CLAIMS.containerId,
         WIRE_ACTION_CLAIMS.action,
+        WIRE_ACTION_CLAIMS.url,
         WIRE_ACTION_CLAIMS.bodyHash,
       ],
     }));
@@ -227,6 +256,9 @@ export async function verifyWireActionRequest(
       'ACTION_MISMATCH',
       `Token is for action "${claims.wire_action}", not "${options.action}"`
     );
+  }
+  if (normalizeActionUrl(claims.wire_url) !== expectedUrl) {
+    throw new WireActionAuthError('URL_MISMATCH', `Token was issued for a different URL than ${expectedUrl}`);
   }
 
   // 5. The body: the exact bytes received, hashed and compared in constant time.
@@ -358,6 +390,31 @@ function remoteJwks(url: string): JWTVerifyGetKey {
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
+/**
+ * How `wire_url` and the endpoint's URL are compared: both are parsed as WHATWG
+ * URLs and reduced to `scheme://host[:port]/path?query`, then compared exactly.
+ *
+ *   - Scheme and host are lowercased, IDN hosts become punycode, and a default
+ *     port (443 for https, 80 for http) is dropped, so `https://Geo.example:443/x`
+ *     equals `https://geo.example/x`.
+ *   - The path has `.` and `..` segments resolved and is otherwise compared
+ *     byte for byte: case, trailing slashes and percent-encoding all count.
+ *   - The query is compared as written (order counts); an empty `?` is no query.
+ *   - The fragment is ignored (it is never sent). A URL with credentials, or
+ *     that is not http(s), normalizes to null and never matches.
+ */
+export function normalizeActionUrl(raw: string): string | null {
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
+  if (u.username || u.password) return null;
+  return `${u.protocol}//${u.host}${u.pathname}${u.search}`;
+}
+
 let warnedDefaultStore = false;
 
 /**
@@ -429,6 +486,10 @@ function checkClaims(payload: JWTPayload, appId: string): WireActionClaims {
     throw new WireActionAuthError('INVALID_CLAIMS', 'Missing container id');
   }
   if (!isId(p[WIRE_ACTION_CLAIMS.action])) throw new WireActionAuthError('INVALID_CLAIMS', 'Missing action');
+  const url = p[WIRE_ACTION_CLAIMS.url];
+  if (typeof url !== 'string' || url.length > MAX_URL_CHARS || normalizeActionUrl(url) === null) {
+    throw new WireActionAuthError('INVALID_CLAIMS', 'Missing or malformed URL');
+  }
   const hash = p[WIRE_ACTION_CLAIMS.bodyHash];
   if (typeof hash !== 'string' || !SHA256_B64URL_RE.test(hash)) {
     throw new WireActionAuthError('INVALID_CLAIMS', 'Missing or malformed body hash');

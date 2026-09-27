@@ -36,7 +36,7 @@ afterEach(() => {
 
 function opts(extra: Partial<VerifyWireActionOptions> = {}): VerifyWireActionOptions {
   return {
-    appId: 'geo-app',
+    appId: 'geo_app',
     action: 'geocode',
     jwksUrl: uniqueUrl(server),
     now: NOW,
@@ -89,7 +89,7 @@ describe('verifyWireAction', () => {
   });
 
   it('refuses a multi-audience token even if it lists this app', async () => {
-    const token = await signAction({ key, body: BODY, aud: ['geo-app', 'other-app'] });
+    const token = await signAction({ key, body: BODY, aud: ['geo_app', 'other-app'] });
     await expectCode(verifyWireAction(actionRequest(token, BODY), opts()), 'INVALID_AUDIENCE');
   });
 
@@ -122,7 +122,7 @@ describe('verifyWireAction', () => {
     await expectCode(verifyWireAction(actionRequest(token, BODY), opts()), 'INVALID_CLAIMS');
   });
 
-  it.each(['sub', 'jti', 'wire_container', 'wire_action', 'wire_body_sha256', 'iat', 'exp'])(
+  it.each(['sub', 'jti', 'wire_container', 'wire_action', 'wire_url', 'wire_body_sha256', 'iat', 'exp'])(
     'refuses a token without %s',
     async (claim) => {
       const token = await signAction({ key, body: BODY, omit: [claim] });
@@ -176,6 +176,51 @@ describe('verifyWireAction', () => {
     await expectCode(verifyWireAction(actionRequest(token, BODY), opts({ action: 'geocode' })), 'ACTION_MISMATCH');
   });
 
+  describe('wire_url', () => {
+    it('accepts the URL the request arrived at', async () => {
+      const token = await signAction({ key, body: BODY, url: 'https://geo-app.example/geocode' });
+      await expect(verifyWireAction(actionRequest(token, BODY), opts())).resolves.toBeTruthy();
+    });
+
+    it('refuses a token issued for another URL', async () => {
+      const token = await signAction({ key, body: BODY, url: 'https://geo-app.example/other' });
+      await expectCode(verifyWireAction(actionRequest(token, BODY), opts()), 'URL_MISMATCH');
+      const otherHost = await signAction({ key, body: BODY, url: 'https://evil.example/geocode' });
+      await expectCode(verifyWireAction(actionRequest(otherHost, BODY), opts()), 'URL_MISMATCH');
+    });
+
+    it('treats scheme, path and query as significant', async () => {
+      for (const url of [
+        'http://geo-app.example/geocode',
+        'https://geo-app.example/geocode/',
+        'https://geo-app.example/Geocode',
+        'https://geo-app.example/geocode?v=2',
+      ]) {
+        const token = await signAction({ key, body: BODY, url });
+        await expectCode(verifyWireAction(actionRequest(token, BODY), opts()), 'URL_MISMATCH');
+      }
+    });
+
+    it('normalizes host case, default port, dot segments and fragment', async () => {
+      const token = await signAction({ key, body: BODY, url: 'https://GEO-APP.example:443/a/../geocode#frag' });
+      await expect(verifyWireAction(actionRequest(token, BODY), opts())).resolves.toBeTruthy();
+    });
+
+    it('checks against an explicit url behind a proxy', async () => {
+      const token = await signAction({ key, body: BODY, url: 'https://geo-app.example/geocode' });
+      // What a Node server behind TLS termination sees.
+      const internal = actionRequest(token, BODY, { url: 'http://10.0.0.5:8080/geocode' });
+      await expectCode(verifyWireAction(internal, opts()), 'URL_MISMATCH');
+      const again = actionRequest(await signAction({ key, body: BODY }), BODY, { url: 'http://10.0.0.5:8080/geocode' });
+      await expect(verifyWireAction(again, opts({ url: 'https://geo-app.example/geocode' }))).resolves.toBeTruthy();
+    });
+
+    it('refuses a malformed wire_url', async () => {
+      const token = await signAction({ key, body: BODY, url: 'not a url' });
+      await expectCode(verifyWireAction(actionRequest(token, BODY), opts()), 'INVALID_CLAIMS');
+    });
+  });
+
   it('refuses a token without the wire-action+jwt typ', async () => {
     const untyped = await signAction({ key, body: BODY, typ: null });
     await expectCode(verifyWireAction(actionRequest(untyped, BODY), opts()), 'MALFORMED_TOKEN');
@@ -184,7 +229,7 @@ describe('verifyWireAction', () => {
   });
 
   it('accepts a one-element audience array, as the engine does', async () => {
-    const token = await signAction({ key, body: BODY, aud: ['geo-app'] });
+    const token = await signAction({ key, body: BODY, aud: ['geo_app'] });
     await expect(verifyWireAction(actionRequest(token, BODY), opts())).resolves.toBeTruthy();
   });
 
@@ -265,7 +310,7 @@ describe('verifyWireAction', () => {
   describe('algorithm confusion', () => {
     it('refuses alg none', async () => {
       const header = base64url.encode(JSON.stringify({ alg: 'none', typ: 'wire-action+jwt', kid: key.kid }));
-      const payload = base64url.encode(JSON.stringify({ iss: 'wire', aud: 'geo-app' }));
+      const payload = base64url.encode(JSON.stringify({ iss: 'wire', aud: 'geo_app' }));
       await expectCode(
         verifyWireAction(actionRequest(`${header}.${payload}.sig`, BODY), opts()),
         'UNSUPPORTED_ALGORITHM'
@@ -277,7 +322,7 @@ describe('verifyWireAction', () => {
       const token = await new SignJWT({ wire_body_sha256: 'x' })
         .setProtectedHeader({ alg: 'HS256', typ: 'wire-action+jwt', kid: key.kid })
         .setIssuer('wire')
-        .setAudience('geo-app')
+        .setAudience('geo_app')
         .sign(secret);
       await expectCode(verifyWireAction(actionRequest(token, BODY), opts()), 'UNSUPPORTED_ALGORITHM');
     });

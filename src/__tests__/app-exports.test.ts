@@ -14,7 +14,7 @@ const dist = join(root, 'dist');
 
 beforeAll(() => {
   if (!existsSync(join(dist, 'app/index.js'))) {
-    execFileSync('npx', ['tsc'], { cwd: root, stdio: 'inherit' });
+    execFileSync('npm', ['run', 'build'], { cwd: root, stdio: 'inherit' });
   }
 }, 120_000);
 
@@ -59,6 +59,9 @@ describe('package exports', () => {
       'WireActionError',
       'WireManifestError',
       'DEFAULT_WIRE_JWKS_URL',
+      'normalizeActionUrl',
+      'validateManifest',
+      'MANIFEST_VALIDATOR_REF',
     ]) {
       expect(names).toContain(name);
     }
@@ -75,7 +78,18 @@ describe('package exports', () => {
   it("the root entry's runtime import graph does not reach the app side", () => {
     const { files, packages } = importGraph(join(dist, 'index.js'));
     expect([...files].some((f) => f.includes(`${join(dist, 'app')}`))).toBe(false);
-    expect(packages.has('@cfworker/json-schema')).toBe(false);
+    // Only the one-line validator ref, never the vendored validator itself.
+    expect([...files].some((f) => f.endsWith(join('vendor', 'manifest', 'manifest.js')))).toBe(false);
+    expect([...packages].filter((p) => !p.startsWith('node:'))).toEqual(['jose']);
+  });
+
+  it('ships the vendored validator in dist and pins it to MANIFEST_REF', async () => {
+    const ref = readFileSync(join(root, 'MANIFEST_REF'), 'utf8').trim();
+    const js = readFileSync(join(dist, 'vendor/manifest/manifest.js'), 'utf8');
+    expect(js.split('\n')[0]).toContain(`usewire/wire@${ref}`);
+    expect(existsSync(join(dist, 'vendor/manifest/manifest.d.ts'))).toBe(true);
+    const { MANIFEST_VALIDATOR_REF } = await import(join(dist, 'vendor/manifest/ref.js'));
+    expect(MANIFEST_VALIDATOR_REF).toBe(ref);
   });
 
   it('declares types for the subpath', () => {

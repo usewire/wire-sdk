@@ -28,6 +28,14 @@ export interface NodeResponseLike {
 export interface NodeHandlerOptions {
   /** Largest body read (default 1 MiB, matching verification's default). */
   maxBodyBytes?: number;
+  /**
+   * The public origin Wire calls, e.g. "https://geo-app.example". A Node server
+   * usually sits behind TLS termination and sees plain http, so without this
+   * the request URL is built as `http://<Host header><path>` and will not match
+   * the https `wire_url` Wire signed. Forwarded headers are deliberately not
+   * trusted for this. (Alternatively pass `url` to defineAction.)
+   */
+  origin?: string;
 }
 
 /** Wrap an endpoint as a Node `(req, res)` handler. */
@@ -36,6 +44,7 @@ export function toNodeHandler(
   options: NodeHandlerOptions = {}
 ): (req: NodeRequestLike, res: NodeResponseLike) => Promise<void> {
   const maxBytes = options.maxBodyBytes ?? 1024 * 1024;
+  const origin = options.origin ? new URL(options.origin).origin : null;
 
   return async (req, res) => {
     let response: Response;
@@ -47,10 +56,10 @@ export function toNodeHandler(
         if (Array.isArray(v)) for (const item of v) headers.append(k, item);
         else headers.set(k, v);
       }
-      const host = headers.get('host') ?? 'localhost';
+      const base = origin ?? `http://${headers.get('host') ?? 'localhost'}`;
       const method = req.method ?? 'GET';
       response = await endpoint.fetch(
-        new Request(`http://${host}${req.url ?? '/'}`, {
+        new Request(`${base}${req.url ?? '/'}`, {
           method,
           headers,
           body: method === 'GET' || method === 'HEAD' ? undefined : body,

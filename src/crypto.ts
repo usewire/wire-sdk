@@ -79,6 +79,8 @@ export async function signConnectJwt(args: {
    * override the registered claims above.
    */
   claims?: Record<string, unknown>;
+  /** `aud`. Default 'wire-api' (connect); registerManifest uses 'wire-manifest'. */
+  audience?: string;
 }): Promise<string> {
   const { agentId, privateJwk, credentialId } = args;
   const key = await importJWK({ ...privateJwk, alg: 'EdDSA' }, 'EdDSA');
@@ -89,7 +91,7 @@ export async function signConnectJwt(args: {
   const jwt = await new SignJWT({ ...(args.claims ?? {}) })
     .setProtectedHeader(header)
     .setIssuer(agentId)
-    .setAudience('wire-api')
+    .setAudience(args.audience ?? 'wire-api')
     .setSubject(credentialId ?? 'bootstrap')
     .setJti(randomJti())
     .setIssuedAt(now)

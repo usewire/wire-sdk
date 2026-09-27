@@ -4,29 +4,31 @@
  * actions those tools call before or after their base tool, instructions and
  * a skill. No secrets.
  *
- * THE ENGINE OWNS THE FORMAT. The types below mirror the engine's
- * `ConnectManifest` (usewire/wire `src/connect/manifest.ts`, SUP-946) and are
- * provisional until that ships. Full validation (tool mappings against base
- * tool schemas, substitution sources, reserved names, URL policy, limits) is
- * the engine's `validateManifest`; it runs on the control plane when you
- * register the manifest. defineManifest() checks locally only
- * what defineAction() depends on, so an action endpoint cannot be built from
- * a manifest it would misread. See the README for why the engine validator is
- * not imported here yet.
+ * THE ENGINE OWNS THE FORMAT AND ITS VALIDATION. defineManifest() runs the
+ * engine's own `validateManifest` (usewire/wire `src/connect/manifest.ts`),
+ * vendored under src/vendor/manifest at the commit pinned in MANIFEST_REF: the
+ * same code the control plane runs on registration and the container runs on
+ * apply. The input types below are the authoring shape (defaults optional);
+ * the vendored `ConnectManifest` type is the normalized result.
  */
+import {
+  ACTION_TIMEOUT_MAX_MS,
+  MANIFEST_FORMAT_VERSION,
+  validateManifest,
+} from '../vendor/manifest/manifest.js';
 import { WireManifestError } from './errors.js';
-import { compileSchema, type JsonSchema } from './schema.js';
+import type { JsonSchema } from './schema.js';
 
 /** The manifest format version this SDK understands. */
-export const MANIFEST_VERSION = 1;
-/** Wire's hard ceiling on an action's timeout. */
-export const MAX_ACTION_TIMEOUT_MS = 8000;
+export const MANIFEST_VERSION = MANIFEST_FORMAT_VERSION as 1;
+/** Wire's hard ceiling on an action's timeout, and its default. */
+export const MAX_ACTION_TIMEOUT_MS: number = ACTION_TIMEOUT_MAX_MS;
 
 export interface ManifestApp {
-  /** Your app id: the agent id you registered with Wire. Also the `aud` of every action call. */
+  /** Your app id (lowercase): the agent id you registered with Wire. Also the `aud` of every action call. */
   id: string;
   name: string;
-  /** Your manifest version (semver). Re-registering the same version is a no-op. */
+  /** Your manifest version. Re-registering an identical document is a no-op. */
   version: string;
 }
 
@@ -54,7 +56,7 @@ export interface ManifestAction {
   /** Required: shown on the consent screen. Say plainly what the action receives and keeps. */
   description: string;
   method?: 'POST';
-  /** Your HTTPS endpoint. */
+  /** Your HTTPS endpoint. Wire calls exactly this URL and signs it into every call (`wire_url`). */
   url: string;
   /** JSON Schema for what Wire sends. */
   input: JsonSchema;
@@ -106,166 +108,28 @@ export type ActionName<M extends WireManifest> = M['actions'] extends ReadonlyAr
     : never
   : never;
 
-const APP_ID_RE = /^[A-Za-z][A-Za-z0-9_-]*$/;
-const ACTION_NAME_RE = /^[A-Za-z][A-Za-z0-9_]*$/;
-const NAME_MAX = 64;
-
 /**
- * Type and check a manifest. Returns a deep-frozen copy (so an action's schema
- * cannot change after its validator was compiled), or throws
- * WireManifestError listing every problem found. The manifest must be plain
- * JSON data.
+ * Validate a manifest with the engine's validator and return the NORMALIZED
+ * document (defaults filled: `timeout_ms`, `method`, empty arrays), deep
+ * frozen, or throw WireManifestError listing every problem, each with its
+ * path (`actions.0.url`, `tools.2.tool.args.limit`). The manifest must be
+ * plain JSON data.
  */
 export function defineManifest<const M extends WireManifest>(manifest: M): DefinedManifest<M> {
-  assertManifest(manifest);
-  const defined = deepFreeze(structuredClone(manifest));
+  const result = validateManifest(structuredClone(manifest));
+  if (!result.ok) throw new WireManifestError(result.errors);
+  const defined = deepFreeze(result.manifest);
   checked.add(defined);
-  return defined as DefinedManifest<M>;
+  return defined as unknown as DefinedManifest<M>;
 }
 
 const checked = new WeakSet<object>();
 
-/** Throw WireManifestError unless the manifest passes the local checks. */
+/** Throw WireManifestError unless the manifest is valid (a defineManifest() result always is). */
 export function assertManifest(manifest: unknown): void {
   if (typeof manifest === 'object' && manifest !== null && checked.has(manifest)) return;
-  const issues = checkManifest(manifest);
-  if (issues.length) throw new WireManifestError(issues);
-}
-
-type Issue = { path: string; message: string };
-
-function isObject(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null && !Array.isArray(v);
-}
-
-function checkManifest(m: unknown): Issue[] {
-  const issues: Issue[] = [];
-  if (!isObject(m)) return [{ path: '', message: 'manifest must be an object' }];
-
-  if (m.manifest !== MANIFEST_VERSION) {
-    issues.push({ path: 'manifest', message: `must be ${MANIFEST_VERSION}` });
-  }
-
-  const app = m.app;
-  if (!isObject(app)) {
-    issues.push({ path: 'app', message: 'required' });
-  } else {
-    if (typeof app.id !== 'string' || !APP_ID_RE.test(app.id) || app.id.length > NAME_MAX) {
-      issues.push({ path: 'app.id', message: 'must be identifier-like (letters, digits, _ or -), starting with a letter' });
-    }
-    if (typeof app.name !== 'string' || !app.name.trim()) issues.push({ path: 'app.name', message: 'required' });
-    if (typeof app.version !== 'string' || !app.version.trim()) {
-      issues.push({ path: 'app.version', message: 'required' });
-    }
-  }
-
-  for (const key of ['objects', 'actions', 'tools', 'base_tools'] as const) {
-    if (m[key] !== undefined && !Array.isArray(m[key])) issues.push({ path: key, message: 'must be an array' });
-  }
-
-  const actions = Array.isArray(m.actions) ? m.actions : [];
-  const seen = new Set<string>();
-  actions.forEach((a: unknown, i: number) => {
-    const at = `actions[${i}]`;
-    if (!isObject(a)) {
-      issues.push({ path: at, message: 'must be an object' });
-      return;
-    }
-    if (typeof a.name !== 'string' || !ACTION_NAME_RE.test(a.name) || a.name.length > NAME_MAX) {
-      issues.push({ path: `${at}.name`, message: 'must be identifier-like, starting with a letter' });
-    } else if (seen.has(a.name)) {
-      issues.push({ path: `${at}.name`, message: `duplicate action "${a.name}"` });
-    } else {
-      seen.add(a.name);
-    }
-    if (typeof a.description !== 'string' || !a.description.trim()) {
-      issues.push({ path: `${at}.description`, message: 'required: the consent screen shows it' });
-    }
-    if (a.method !== undefined && a.method !== 'POST') {
-      issues.push({ path: `${at}.method`, message: 'must be POST' });
-    }
-    if (typeof a.url !== 'string' || !isHttpsUrl(a.url)) {
-      issues.push({ path: `${at}.url`, message: 'must be an https URL' });
-    }
-    if (
-      a.timeout_ms !== undefined &&
-      (typeof a.timeout_ms !== 'number' ||
-        !Number.isInteger(a.timeout_ms) ||
-        a.timeout_ms <= 0 ||
-        a.timeout_ms > MAX_ACTION_TIMEOUT_MS)
-    ) {
-      issues.push({ path: `${at}.timeout_ms`, message: `must be an integer from 1 to ${MAX_ACTION_TIMEOUT_MS}` });
-    }
-    for (const key of ['input', 'output'] as const) {
-      const schema = a[key];
-      if (!isObject(schema)) {
-        issues.push({ path: `${at}.${key}`, message: 'must be a JSON Schema object' });
-        continue;
-      }
-      const inherited = inheritedNames(schema);
-      if (inherited) {
-        issues.push({ path: `${at}.${key}`, message: `property "${inherited}" shadows a built-in object member` });
-        continue;
-      }
-      try {
-        compileSchema(schema);
-      } catch (err) {
-        issues.push({ path: `${at}.${key}`, message: `not a usable JSON Schema: ${(err as Error).message}` });
-      }
-    }
-  });
-
-  // Tools reference actions by name; a dangling reference would install a
-  // tool that can never run. (The rest of the tool mapping is the engine's.)
-  const tools = Array.isArray(m.tools) ? m.tools : [];
-  tools.forEach((t: unknown, i: number) => {
-    if (!isObject(t)) {
-      issues.push({ path: `tools[${i}]`, message: 'must be an object' });
-      return;
-    }
-    for (const step of ['before', 'after'] as const) {
-      const s = t[step];
-      if (s === undefined) continue;
-      if (!isObject(s) || typeof s.action !== 'string') {
-        issues.push({ path: `tools[${i}].${step}`, message: 'must be { action, args }' });
-      } else if (!seen.has(s.action)) {
-        issues.push({ path: `tools[${i}].${step}.action`, message: `no action named "${s.action}"` });
-      }
-    }
-  });
-
-  return issues;
-}
-
-/**
- * The validator tests `properties` / `required` with `in`, which sees
- * Object.prototype: a property called "constructor" would be "present" on
- * every object. Refuse such names anywhere in a schema.
- */
-function inheritedNames(schema: unknown, depth = 0): string | null {
-  if (depth > 32 || typeof schema !== 'object' || schema === null) return null;
-  const s = schema as Record<string, unknown>;
-  const names = [
-    ...(isObject(s.properties) ? Object.keys(s.properties) : []),
-    ...(Array.isArray(s.required) ? s.required.filter((n): n is string => typeof n === 'string') : []),
-  ];
-  const hit = names.find((n) => n in Object.prototype);
-  if (hit) return hit;
-  for (const v of Object.values(s)) {
-    const found = Array.isArray(v)
-      ? v.map((x) => inheritedNames(x, depth + 1)).find(Boolean) ?? null
-      : inheritedNames(v, depth + 1);
-    if (found) return found;
-  }
-  return null;
-}
-
-function isHttpsUrl(s: string): boolean {
-  try {
-    return new URL(s).protocol === 'https:';
-  } catch {
-    return false;
-  }
+  const result = validateManifest(manifest);
+  if (!result.ok) throw new WireManifestError(result.errors);
 }
 
 function deepFreeze<T>(value: T): T {

@@ -26,6 +26,8 @@ export type WireActionAuthErrorCode =
   | 'INVALID_CLAIMS'
   /** The token was minted for a different action than the one this endpoint serves. */
   | 'ACTION_MISMATCH'
+  /** The token's `wire_url` is not the URL this endpoint serves. */
+  | 'URL_MISMATCH'
   /** The request body does not hash to the token's body hash. */
   | 'BODY_MISMATCH'
   /** The request body is larger than `maxBodyBytes`. */

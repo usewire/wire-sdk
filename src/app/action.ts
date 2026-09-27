@@ -20,10 +20,17 @@ import {
 } from './manifest.js';
 import type { ReplayStore } from './replay.js';
 import { compileSchema, type SchemaIssue } from './schema.js';
-import { checkJwksUrl, DEFAULT_WIRE_JWKS_URL, verifyWireActionRequest, type WireActionClaims } from './verify.js';
+import {
+  checkJwksUrl,
+  DEFAULT_WIRE_JWKS_URL,
+  normalizeActionUrl,
+  verifyWireActionRequest,
+  type WireActionClaims,
+} from './verify.js';
 
 /** What a handler knows about the call. */
 export interface ActionContext {
+  /** The connection. Key per-install state by (connectionId, containerId), never connectionId alone. */
   connectionId: string;
   containerId: string;
   action: string;
@@ -43,6 +50,13 @@ export interface DefineActionOptions {
   appId?: string;
   /** Wire's JWKS URL. Defaults to DEFAULT_WIRE_JWKS_URL. */
   jwksUrl?: string;
+  /**
+   * The public URL Wire calls this action at, checked against the token's
+   * `wire_url`. Defaults to `request.url`. Behind a proxy or TLS terminator
+   * that changes what the app sees, set it to the action's `url` from your
+   * manifest. See `normalizeActionUrl` for the comparison.
+   */
+  url?: string;
   /**
    * Shared, atomic replay store. The default is in memory, per instance —
    * pass a shared one if the app runs more than one instance.
@@ -64,7 +78,7 @@ export interface DefineActionOptions {
    * invalid output, timeouts. The default logs to console.error only what the
    * app operator must act on (Wire's keys or the replay store unreachable,
    * handler exceptions, invalid output, timeouts) and skips routine 401s, so
-   * unauthenticated traffic cannot flood the log. It logs codes, schema paths
+   * unauthenticated traffic cannot flood the log. It logs codes, value paths
    * and the error's name, never input or output values.
    */
   onError?: (event: ActionErrorEvent) => void;
@@ -100,6 +114,9 @@ export function defineAction<
   // here, so a bad timeout or schema fails now rather than on every call.
   assertManifest(manifest);
   checkJwksUrl(options.jwksUrl ?? DEFAULT_WIRE_JWKS_URL);
+  if (options.url !== undefined && normalizeActionUrl(options.url) === null) {
+    throw new TypeError('defineAction: url must be an absolute http(s) URL');
+  }
   const found = manifest.actions?.find((a) => a.name === name);
   if (!found) {
     throw new TypeError(`defineAction: the manifest declares no action named "${String(name)}"`);
@@ -110,8 +127,8 @@ export function defineAction<
   const appId = options.appId ?? manifest.app?.id;
   if (!appId) throw new TypeError('defineAction: no appId (set manifest.app.id or options.appId)');
 
-  const checkInput = compileSchema(action.input);
-  const checkOutput = compileSchema(action.output);
+  const checkInput = compileSchema(action.input, 'input');
+  const checkOutput = compileSchema(action.output, 'output');
   const budgetMs = Math.min(action.timeout_ms ?? MAX_ACTION_TIMEOUT_MS, MAX_ACTION_TIMEOUT_MS);
   const marginMs = Math.max(0, options.deadlineMarginMs ?? 250);
   const report = options.onError ?? defaultOnError;
@@ -139,6 +156,7 @@ export function defineAction<
       ({ verified, body } = await verifyWireActionRequest(request, {
         appId,
         action: action.name,
+        url: options.url,
         jwksUrl: options.jwksUrl,
         replayStore: options.replayStore,
         now: options.now,
@@ -217,11 +235,11 @@ const TIMED_OUT: unique symbol = Symbol('timed out');
 
 /** A validator that throws (an unsupported value, a schema quirk) is a failed check, not a crash. */
 function safeCheck(check: (v: unknown) => SchemaIssue[], value: unknown): SchemaIssue[] {
-  if (value === undefined) return [{ path: '', keyword: 'type', message: 'No value' }];
+  if (value === undefined) return [{ path: '', message: 'No value' }];
   try {
     return check(value);
   } catch (err) {
-    return [{ path: '', keyword: 'exception', message: (err as Error)?.message ?? 'Validation failed' }];
+    return [{ path: '', message: (err as Error)?.message ?? 'Validation failed' }];
   }
 }
 
@@ -241,7 +259,8 @@ function defaultOnError(event: ActionErrorEvent): void {
   // Routine auth failures (401/413) are the caller's problem, and logging
   // them would let anyone fill the log.
   if (event.status === 401 || event.status === 413) return;
-  const issues = event.issues?.map((i) => `${i.path || '/'} (${i.keyword})`).join(', ');
+  // Paths only: an issue's message can quote a schema value.
+  const issues = event.issues?.map((i) => i.path || '(root)').join(', ');
   const name = event.error instanceof Error ? event.error.name : '';
   console.error(
     `[wire action ${event.action}] ${event.status} ${event.code}${issues ? ` at ${issues}` : ''}${name ? ` (${name})` : ''}`
