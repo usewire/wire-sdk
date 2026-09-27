@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.0
 
 - `@usewire/sdk/app`, a separate entry point for Connect apps (SUP-946):
   `defineManifest`, `defineAction` (with Hono and Node adapters),
@@ -15,7 +15,13 @@
   `aud: "wire-manifest"` and a publisher key.
 - Action calls are bound to their URL (`wire_url`), checked against the request
   URL or an explicit `url` / `origin` behind a proxy.
-- The registration endpoint is provisional until the matching Wire release.
+- Manifest v2 fields (SUP-954), from the validator at usewire/wire@52b46d7:
+  `tools[i].enabled` and `tools[i].transports` (`{ mcp, rest }`, each defaulting
+  to true) set an app tool's visibility on install, whatever it was before; a
+  top-level `analysis: { provenance, entity }` asks Wire to turn those analysis
+  graphs on for the container (each defaults to false; each costs 1 credit per
+  entry written, and installing an app that asks for one needs an org owner or
+  admin).
 
 ## 0.7.0
 
