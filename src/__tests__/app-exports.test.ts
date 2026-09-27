@@ -62,6 +62,15 @@ describe('package exports', () => {
       'normalizeActionUrl',
       'validateManifest',
       'MANIFEST_VALIDATOR_REF',
+      // SUP-958
+      'WireAppClient',
+      'WireAppApiError',
+      'generateRuntimeKey',
+      'verifyWireWebhook',
+      'defineWebhook',
+      'WireWebhookError',
+      'WIRE_WEBHOOK_EVENT_TYPES',
+      'WIRE_WEBHOOK_JWT_TYP',
     ]) {
       expect(names).toContain(name);
     }
@@ -72,6 +81,8 @@ describe('package exports', () => {
     expect(names).toContain('WireClient');
     expect(names).toContain('WireProvisionClient');
     expect(names).not.toContain('defineAction');
+    expect(names).not.toContain('WireAppClient');
+    expect(names).not.toContain('verifyWireWebhook');
     expect(names).not.toContain('verifyWireAction');
   });
 

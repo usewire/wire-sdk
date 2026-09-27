@@ -1,5 +1,6 @@
 /**
- * jti replay protection for Wire action calls.
+ * jti replay protection for Wire action calls, and event-id deduplication for
+ * Wire webhooks.
  *
  * Every action call carries a one-time `jti`. The app records each one until
  * the token could no longer verify anyway (exp + clock tolerance), and refuses
@@ -28,6 +29,15 @@ export interface ReplayStore {
    * Return true if it was not already recorded, false if it was.
    */
   markUsed(key: string, ttlSeconds: number): boolean | Promise<boolean>;
+  /**
+   * Optional. Forget `key`, so it can be marked again. Webhook handling uses
+   * it: a webhook's event id is recorded before the handler runs, and
+   * released if the handler fails, so Wire's retry of that event is processed
+   * rather than acknowledged as a duplicate. A store without it still
+   * deduplicates, but an event whose handler failed is then acknowledged, not
+   * reprocessed, when Wire retries it (Redis: `DEL key`).
+   */
+  release?(key: string): void | Promise<void>;
 }
 
 export interface MemoryReplayStoreOptions {
@@ -75,6 +85,10 @@ export class MemoryReplayStore implements ReplayStore {
     this.entries.delete(key);
     this.entries.set(key, expiresAt);
     return true;
+  }
+
+  release(key: string): void {
+    this.entries.delete(key);
   }
 
   /** Live entries (for tests and metrics). */

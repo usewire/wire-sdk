@@ -1,5 +1,6 @@
 /**
- * Node `http` adapter: serve a WireActionEndpoint from `http.createServer`,
+ * Node `http` adapter: serve a WireActionEndpoint or a WireWebhookEndpoint
+ * (anything with a Fetch `fetch(request)`) from `http.createServer`,
  * Express, Fastify's raw handler, or anything else that hands you Node's
  * (req, res). No `node:` imports, so the app entry stays runtime-neutral.
  *
@@ -103,7 +104,7 @@ async function readNodeBody(req: NodeRequestLike, maxBytes: number): Promise<Uin
     throw new BodyError(
       500,
       'BODY_ALREADY_PARSED',
-      'The request body was already parsed by middleware; mount the Wire action before any JSON body parser'
+      'The request body was already parsed by middleware; mount the Wire action or webhook before any JSON body parser'
     );
   }
   const chunks: Uint8Array[] = [];

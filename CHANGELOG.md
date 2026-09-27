@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.9.0
+
+Know your installs without holding a key (SUP-958).
+
+- Connection results carry the install's stable, non-secret ids: `installId`
+  (`ins_…`, one per app, user and container) and `appUserId` (`au_…`, pairwise
+  per app and user, null on an unclaimed trial). On `connect`,
+  `checkConnection`, `connectInBrowser` / `completeConnectInBrowser`, and on
+  `getStatus().connection`. Null from an older server.
+- `WireAppClient` in `@usewire/sdk/app`: `getInstall(installId)`,
+  `listInstalls(appUserId)` and `revokeInstall(installId)` (uninstalls), signed
+  with the app's runtime key (a fresh 60-second EdDSA JWT per call,
+  `aud: "wire-app-api"`, `body_sha256` on DELETE). Returns typed `WireInstall`
+  objects: container name, status and reason, last use, `manageUrl`, and for a
+  trial `isEphemeral`, `ephemeralExpiresAt` and `claimUrl`. Failures throw
+  `WireAppApiError` with `code`, `status` and `retryable` (network errors, 429,
+  502, 503, 504).
+- `generateRuntimeKey()`: the Ed25519 key `WireAppClient` signs with. Register
+  its public half with `purpose: "runtime"` on
+  `POST /api/v1/agents/{appId}/publisher-keys`.
+- `verifyWireWebhook` and `defineWebhook` (Hono and Node adapters) for install
+  webhooks: `install.created`, `.upgraded`, `.disconnected`, `.uninstalled`,
+  `.claimed`, `.expiring`, `.expired`, `.container_deleted`. Verified against
+  the same JWKS as action calls, pinned to `typ: "wire-webhook+jwt"`,
+  `iss: "wire"`, your app id and your webhook URL, with the body hash checked
+  before parsing and the event id bound to the `X-Wire-Event-Id` header and the
+  body. Each event id is deduplicated through the replay store (a repeat
+  answers 200 without running the handler; a handler failure releases it so
+  Wire's retry runs). `WireWebhookError.status` is what to answer with.
+- `ReplayStore` gains an optional `release(key)`, which `MemoryReplayStore`
+  implements.
+
 ## 0.8.1
 
 - Vendors the manifest validator at usewire/wire@429678f (SUP-957): a manifest can set

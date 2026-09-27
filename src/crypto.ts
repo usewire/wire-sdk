@@ -30,7 +30,8 @@ function base64UrlDecode(s: string): Uint8Array {
   return out;
 }
 
-function randomJti(): string {
+/** A random 22-character base64url `jti` (16 bytes). */
+export function randomJti(): string {
   const buf = new Uint8Array(16);
   crypto.getRandomValues(buf);
   return base64UrlEncode(buf);

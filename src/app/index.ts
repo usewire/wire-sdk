@@ -11,6 +11,13 @@
  *   - verifyWireAction(request, { appId, action })  verification alone, for your own server
  *   - toNodeHandler(endpoint)                 Node (req, res) adapter
  *
+ * And the app's own view of its installs (SUP-958):
+ *
+ *   - new WireAppClient({ appId, runtimeKey })  getInstall / listInstalls / revokeInstall
+ *   - verifyWireWebhook(request, { appId })     verify one install webhook
+ *   - defineWebhook(handlers, { appId })        a verified webhook endpoint
+ *   - generateRuntimeKey()                      the key WireAppClient signs with
+ *
  * Kept apart from the root entry (the connection manager) so apps that only
  * connect never bundle any of this. Registering the manifest is
  * `WireClient.registerManifest()` on the root entry.
@@ -62,7 +69,52 @@ export type { MemoryReplayStoreOptions, ReplayStore } from './replay.js';
 export { toNodeHandler } from './node.js';
 export type { NodeHandlerOptions, NodeRequestLike, NodeResponseLike } from './node.js';
 
-export { WireActionAuthError, WireActionError, WireManifestError } from './errors.js';
-export type { WireActionAuthErrorCode } from './errors.js';
+export {
+  WireAppClient,
+  generateRuntimeKey,
+  APP_API_AUDIENCE,
+  APP_API_BODY_HASH_CLAIM,
+  APP_API_TOKEN_LIFETIME_SEC,
+} from './app-client.js';
+export type { WireAppClientOptions, WireRuntimeKey } from './app-client.js';
+
+export type { WireInstall, WireInstallRevokedReason } from './installs.js';
+
+export {
+  defineWebhook,
+  verifyWireWebhook,
+  DEFAULT_WEBHOOK_DEDUPE_TTL_SEC,
+  DEFAULT_WEBHOOK_MAX_BODY_BYTES,
+  WIRE_WEBHOOK_CLAIMS,
+  WIRE_WEBHOOK_EVENT_ID_HEADER,
+  WIRE_WEBHOOK_EVENT_TYPE_HEADER,
+  WIRE_WEBHOOK_EVENT_TYPES,
+  WIRE_WEBHOOK_ISSUER,
+  WIRE_WEBHOOK_JWT_TYP,
+  WIRE_WEBHOOK_TOKEN_LIFETIME_SEC,
+} from './webhook.js';
+export type {
+  DefineWebhookOptions,
+  RawWebhookRequest,
+  VerifiedWireWebhook,
+  VerifyWireWebhookOptions,
+  WebhookContext,
+  WebhookErrorEvent,
+  WebhookHandler,
+  WebhookHandlers,
+  WireWebhookClaims,
+  WireWebhookEndpoint,
+  WireWebhookEvent,
+  WireWebhookEventType,
+} from './webhook.js';
+
+export {
+  WireActionAuthError,
+  WireActionError,
+  WireAppApiError,
+  WireManifestError,
+  WireWebhookError,
+} from './errors.js';
+export type { WireActionAuthErrorCode, WireWebhookErrorCode } from './errors.js';
 
 export type { JsonSchema, SchemaIssue } from './schema.js';

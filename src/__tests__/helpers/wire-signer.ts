@@ -109,6 +109,97 @@ export async function signAction(o: SignOptions): Promise<string> {
   return new SignJWT(payload).setProtectedHeader(header).sign(o.key.privateKey);
 }
 
+// ─── Webhooks ───────────────────────────────────────────────────────────────
+// Mirrors wire-platform `packages/plane-contracts/src/webhooks.ts`
+// (buildWebhookClaims) and `apps/containers/src/lib/webhook-delivery.ts`
+// (signWebhookJwt, attemptWebhookDelivery) exactly: the same header, the same
+// claims in the same shape, the same request headers.
+
+export const WEBHOOK_URL = 'https://someday.example/hooks/wire?x=1';
+export const EVENT_ID = 'evt_0123456789abcdef0123456789abcdef';
+
+export function installJson(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    installId: 'ins_aaaaaaaaaaaaaaaaaaaaaaaa',
+    appUserId: 'au_bbbbbbbbbbbbbbbbbbbbbbbb',
+    container: {
+      id: 'c1',
+      name: 'Places',
+      mcpEndpoint: 'https://x.mcp.usewire.io/container/c1/mcp',
+      orgSlug: 'x',
+      isEphemeral: false,
+      ephemeralExpiresAt: null,
+    },
+    claimed: true,
+    connection: { status: 'active', connectedAt: '2026-09-01T00:00:00.000Z', lastUsedAt: null },
+    manageUrl: 'https://app.usewire.io/containers/c1/connections#installed-apps',
+    ...over,
+  };
+}
+
+export function webhookBody(over: Record<string, unknown> = {}): string {
+  return JSON.stringify({
+    id: EVENT_ID,
+    type: 'install.created',
+    createdAt: '2026-09-26T11:59:59.000Z',
+    install: installJson(),
+    ...over,
+  });
+}
+
+export interface WebhookSignOptions {
+  key: TestKey;
+  body: string;
+  audience?: string | string[];
+  eventId?: string;
+  url?: string;
+  iss?: string;
+  jti?: string;
+  iat?: number;
+  exp?: number;
+  bodyHash?: string;
+  typ?: string | null;
+  kid?: string | null;
+  omit?: string[];
+}
+
+/** buildWebhookClaims + signWebhookJwt, with knobs for the negative cases. */
+export async function signWebhook(o: WebhookSignOptions): Promise<string> {
+  const iat = o.iat ?? NOW_SEC;
+  const payload: Record<string, unknown> = {
+    iss: o.iss ?? 'wire',
+    aud: o.audience ?? 'someday',
+    iat,
+    exp: o.exp ?? iat + 60,
+    jti: o.jti ?? crypto.randomUUID(),
+    wire_event: o.eventId ?? EVENT_ID,
+    wire_url: o.url ?? WEBHOOK_URL,
+    wire_body_sha256: o.bodyHash ?? (await sha256Base64Url(o.body)),
+  };
+  for (const k of o.omit ?? []) delete payload[k];
+  const header: { alg: string; typ?: string; kid?: string } = { alg: 'EdDSA' };
+  if (o.typ !== null) header.typ = o.typ ?? 'wire-webhook+jwt';
+  if (o.kid !== null) header.kid = o.kid ?? o.key.kid;
+  return new SignJWT(payload).setProtectedHeader(header).sign(o.key.privateKey);
+}
+
+/** The request attemptWebhookDelivery sends. */
+export function webhookRequest(
+  token: string | null,
+  body: string,
+  init: { url?: string; method?: string; eventId?: string | null; type?: string | null } = {}
+): Request {
+  const headers: Record<string, string> = { 'content-type': 'application/json', 'user-agent': 'Wire-Webhooks/1' };
+  if (token !== null) headers.authorization = `Bearer ${token}`;
+  if (init.eventId !== null) headers['X-Wire-Event-Id'] = init.eventId ?? EVENT_ID;
+  if (init.type !== null) headers['X-Wire-Event-Type'] = init.type ?? 'install.created';
+  return new Request(init.url ?? WEBHOOK_URL, {
+    method: init.method ?? 'POST',
+    headers,
+    body: init.method === 'GET' ? undefined : body,
+  });
+}
+
 export function actionRequest(token: string | null, body: string, init: { url?: string; method?: string } = {}): Request {
   const headers: Record<string, string> = { 'content-type': 'application/json', 'x-wire-request-id': 'req_789' };
   if (token !== null) headers.authorization = `Bearer ${token}`;
