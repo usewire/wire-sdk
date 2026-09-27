@@ -55,6 +55,21 @@ export interface Connection {
 
   connectedAt: Date;
   label?: string;
+
+  /**
+   * The install's stable id (`ins_…`): one per app, user and container, kept
+   * across reconnects. Not a credential: store it and read the install later
+   * from your server with WireAppClient (`@usewire/sdk/app`). Null from a
+   * Wire server older than SUP-958.
+   */
+  installId: string | null;
+  /**
+   * The user's id for your app (`au_…`), pairwise: another app gets a
+   * different id for the same person, and it never reveals their Wire
+   * account. Not a credential. Null while the user is on an unclaimed trial
+   * (set when they claim it), or from a server older than SUP-958.
+   */
+  appUserId: string | null;
 }
 
 export interface ConnectOptions {
@@ -160,6 +175,10 @@ export interface StatusSnapshot {
     connectedAt: Date;
     lastUsedAt: Date | null;
     label: string | null;
+    /** The install's stable id (see Connection.installId). Null from an older server. */
+    installId: string | null;
+    /** The user's pairwise id for this app (see Connection.appUserId). Null on an unclaimed trial. */
+    appUserId: string | null;
   };
   agent: {
     id: string;

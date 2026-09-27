@@ -102,6 +102,8 @@ interface PollReadyData {
   created_at: string | null;
   app_id: string;
   credential_id: string;
+  install_id?: string | null;
+  app_user_id?: string | null;
 }
 interface PollPending {
   status: 'pending';
@@ -126,6 +128,8 @@ interface StatusResponseData {
     connected_at: string;
     last_used_at: string | null;
     label: string | null;
+    install_id?: string | null;
+    app_user_id?: string | null;
   };
   app: { id: string; name: string; verified: boolean };
 }
@@ -455,6 +459,8 @@ export class WireClient {
         created_at: string | null;
         app_id: string;
         credential_id: string;
+        install_id?: string | null;
+        app_user_id?: string | null;
       };
     };
     if (!res.ok || json.error) {
@@ -499,6 +505,8 @@ export class WireClient {
           ? new Date(data.connection.last_used_at)
           : null,
         label: data.connection.label,
+        installId: data.connection.install_id ?? null,
+        appUserId: data.connection.app_user_id ?? null,
       },
       agent: data.app,
     };
@@ -677,6 +685,9 @@ function connectionFromWireData(
     created_at: string | null;
     app_id: string;
     credential_id: string;
+    /** SUP-958; absent from older servers. */
+    install_id?: string | null;
+    app_user_id?: string | null;
   },
   extras: { deviceKey?: DeviceKey; label?: string }
 ): Connection {
@@ -696,6 +707,8 @@ function connectionFromWireData(
     deviceKey: extras.deviceKey,
     connectedAt: new Date(),
     label: extras.label,
+    installId: data.install_id ?? null,
+    appUserId: data.app_user_id ?? null,
   };
 }
 

@@ -343,7 +343,8 @@ function isNoKey(err: unknown): boolean {
 
 const UNKNOWN_KID = () => new WireActionAuthError('UNKNOWN_KEY', 'No Wire key matches the token kid');
 
-function remoteJwks(url: string): JWTVerifyGetKey {
+/** @internal Shared with the webhook verifier. */
+export function remoteJwks(url: string): JWTVerifyGetKey {
   const cached = jwksCache.get(url);
   if (cached) return cached;
 
@@ -421,14 +422,16 @@ let warnedDefaultStore = false;
  * The in-memory default only protects one isolate, and a Worker under real
  * traffic runs many. Say so once, where the app author will see it.
  */
-function defaultReplayStoreWithWarning(): ReplayStore {
+/** @internal Shared with the webhook verifier. */
+export function defaultReplayStoreWithWarning(): ReplayStore {
   if (!warnedDefaultStore) {
     warnedDefaultStore = true;
     const ua = (globalThis as { navigator?: { userAgent?: string } }).navigator?.userAgent;
     if (ua === 'Cloudflare-Workers') {
       console.warn(
-        '[wire] verifyWireAction is using the in-memory replay store, which protects one isolate only. ' +
-          'Pass a shared, atomic replayStore (for example a Durable Object) so a captured call cannot be replayed against another isolate.'
+        '[wire] verifyWireAction / verifyWireWebhook is using the in-memory replay store, which protects one isolate only. ' +
+          'Pass a shared, atomic replayStore (for example a Durable Object) so a captured call cannot be replayed, ' +
+          'and a webhook event processed twice, across isolates.'
       );
     }
   }
@@ -497,7 +500,8 @@ function checkClaims(payload: JWTPayload, appId: string): WireActionClaims {
   return payload as WireActionClaims;
 }
 
-async function readBody(request: Request, maxBytes: number): Promise<Uint8Array<ArrayBuffer>> {
+/** @internal Shared with the webhook verifier. */
+export async function readBody(request: Request, maxBytes: number): Promise<Uint8Array<ArrayBuffer>> {
   const declared = request.headers.get('content-length');
   if (declared !== null && Number(declared) > maxBytes) {
     throw new WireActionAuthError('BODY_TOO_LARGE', `Body exceeds ${maxBytes} bytes`);
@@ -537,7 +541,8 @@ export async function sha256Base64Url(bytes: Uint8Array | string): Promise<strin
   return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
-function timingSafeEqual(a: string, b: string): boolean {
+/** @internal Shared with the webhook verifier. */
+export function timingSafeEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
   let diff = 0;
   for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);

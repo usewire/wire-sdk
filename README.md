@@ -66,8 +66,16 @@ interface Connection {
   deviceKey: DeviceKey;
   connectedAt: Date;
   label?: string;
+  installId: string | null;  // 0.9.0: stable per app, user and container; not a credential
+  appUserId: string | null;  // 0.9.0: pairwise per app and user; null on an unclaimed trial
 }
 ```
+
+`installId` and `appUserId` grant nothing, so they are safe to keep in your
+own database next to your user. A Connect app keeps them instead of the API key
+and reads the install later from its server: see
+[Look up installs from your server](#look-up-installs-from-your-server). Both
+are null from a Wire server older than 0.9.0's.
 
 ## Reuse the install identity
 
@@ -508,6 +516,273 @@ async function verify(request: Request, appId: string, action: string, publicUrl
 }
 ```
 
+### Look up installs from your server
+
+To show "connected to Places, manage it in Wire" on a later visit, your app
+does not need to keep anyone's API key. Keep the two ids every connect returns,
+and ask Wire about them from your server:
+
+| Id | One per | Notes |
+|---|---|---|
+| `installId` (`ins_…`) | app, user and container | Survives a reconnect of the same user to the same container |
+| `appUserId` (`au_…`) | app and user | Pairwise: another app gets a different id for the same person, and it never reveals their Wire account. Null on an unclaimed trial, set when it is claimed |
+
+A typical pattern: when the connect completes, store `appUserId` on your user
+(and `installId` if your app uses one container per user). Throw the API key
+away if your app does not call the container itself. When you render a
+settings or manage page, list that user's installs.
+
+Your server authenticates with a **runtime key**, an Ed25519 key registered for
+your app with `purpose: "runtime"`. It is separate from the publisher key that
+registers your manifest, and neither is accepted in place of the other: the key
+a live server holds can read and uninstall your own app's installs and nothing
+else. Generate one and register its public half:
+
+```typescript
+import { generateRuntimeKey } from '@usewire/sdk/app';
+
+const { privateJwk, publicKey } = await generateRuntimeKey();
+// Keep JSON.stringify(privateJwk) as a server secret. Register publicKey:
+```
+
+```bash
+curl -X POST https://app.usewire.io/api/v1/agents/someday/publisher-keys \
+  -H 'content-type: application/json' --cookie "$WIRE_SESSION" \
+  -d '{ "publicKey": "<publicKey>", "label": "production server", "purpose": "runtime" }'
+# → { "success": true, "data": { "id": "pk_…", "purpose": "runtime" } }
+```
+
+The caller needs `organization: update` on your app's owner org. The answer's
+`id` is the key id. Revoke a key with
+`DELETE /api/v1/agents/{appId}/publisher-keys/{keyId}`.
+
+Then, in a Worker (or Node 18+, Bun, Deno):
+
+```typescript
+import { WireAppClient } from '@usewire/sdk/app';
+
+const wire = new WireAppClient({
+  appId: 'someday',
+  runtimeKey: { privateJwk: env.WIRE_RUNTIME_KEY, keyId: env.WIRE_RUNTIME_KEY_ID },
+  // baseUrl: 'https://preview.app.usewire.io',
+});
+
+const installs = await wire.listInstalls(user.wireAppUserId); // [] if none
+for (const i of installs) {
+  i.container.name;          // "Places" (null once the container is deleted)
+  i.connection.status;       // "active" | "revoked"
+  i.connection.reason;       // when revoked: user_disconnected | app_disconnected | uninstalled | container_deleted | expired
+  i.connection.lastUsedAt;   // Date | null
+  i.manageUrl;               // link to the container's installed apps in Wire
+}
+
+const one = await wire.getInstall(user.wireInstallId); // null if your app has no such install
+await wire.revokeInstall(user.wireInstallId);         // uninstall; resolves with the install, now revoked
+```
+
+| Method | Wire endpoint | Returns |
+|---|---|---|
+| `getInstall(installId)` | `GET /api/v1/apps/{appId}/installs/{installId}` | `WireInstall`, or `null` for an install your app does not have |
+| `listInstalls(appUserId)` | `GET /api/v1/apps/{appId}/users/{appUserId}/installs` | `WireInstall[]`, newest first; `[]` for a user your app does not know |
+| `revokeInstall(installId)` | `DELETE /api/v1/apps/{appId}/installs/{installId}` | `WireInstall` (revoked, `uninstalled`) |
+
+An app only ever sees its own installs: another app's ids answer as if they did
+not exist. A revoked install stays readable, with `connection.status:
+"revoked"` and a `reason`. The install never includes an API key, the
+container's contents, the user's Wire account id, or their email.
+
+`revokeInstall` does what the container owner's **Uninstall** button does: your
+app's connections to that container end (every user's, since uninstalling is
+per container), Wire's built-in tools and the analysis graphs go back to their
+defaults, and the data stays. Disconnecting without uninstalling stays a
+dashboard action.
+
+Each call signs a fresh token (`iss` your app id, `aud: "wire-app-api"`, a
+60-second lifetime, a single-use `jti`, and on `DELETE` a `body_sha256` of the
+empty body). Failures throw `WireAppApiError`, a `WireSdkError` with Wire's
+`code`, the HTTP `status`, and `retryable`:
+
+| `code` | `status` | Meaning |
+|---|---|---|
+| `UNAUTHORIZED`, `INVALID_TOKEN`, `TOKEN_EXPIRED`, `REPLAY_DETECTED`, `CREDENTIAL_REVOKED`, `RUNTIME_KEY_REQUIRED`, `UNKNOWN_AGENT` | 401 | The key or token was refused (a publish key, a revoked key, a clock more than a minute off) |
+| `AGENT_DISABLED` | 403 | Your app is disabled |
+| `NOT_FOUND` | 404 | `revokeInstall` of an install your app does not have, or whose container is gone |
+| `CONTAINER_UNAVAILABLE` | 502 | `revokeInstall`: the connections ended but the container could not finish the uninstall yet. `retryable`: call it again |
+| `UNAVAILABLE` | 503 | Wire could not answer. `retryable` |
+| `NETWORK_ERROR`, `HTTP_<status>` | | No answer, or not Wire's. `retryable` for network errors, 429, 502, 503 and 504 |
+
+### Webhooks
+
+Wire can POST a signed event to your server whenever one of your installs
+changes, so your records stay right between visits. Register the URL and the
+events on your app record (same permission as adding a key):
+
+```bash
+curl -X PATCH https://app.usewire.io/api/v1/agents/someday \
+  -H 'content-type: application/json' --cookie "$WIRE_SESSION" \
+  -d '{ "webhooks": { "url": "https://someday.example/webhooks/wire", "events": ["install.created", "install.uninstalled", "install.disconnected", "install.claimed", "install.expiring"] } }'
+```
+
+The URL follows the action URL rules: https only, no credentials, no private
+address, not a Wire domain. `"webhooks": null` stops them.
+
+| Event | Sent when |
+|---|---|
+| `install.created` | A connect made the install active: the first connect, or a reconnect after it was revoked |
+| `install.upgraded` | A connect of an active install applied a newer version of your manifest |
+| `install.disconnected` | The install's last live connection ended (the user disconnected, or you rotated your app's credentials) |
+| `install.uninstalled` | Your app was uninstalled from the container, by its owner or by your `revokeInstall` |
+| `install.claimed` | The install's trial container was claimed; `install.appUserId` is now set |
+| `install.expiring` | About a day before a trial container expires, once |
+| `install.expired` | A trial container expired and is being deleted |
+| `install.container_deleted` | The container was permanently deleted |
+
+The body is `{ id, type, createdAt, install }`, where `install` is the same
+`WireInstall` the app API returns, as it was when the event happened.
+
+`defineWebhook` returns a complete endpoint. It verifies the request, answers
+`200` once your handler returns, and dispatches by event type:
+
+```typescript
+// worker.ts
+import { defineWebhook } from '@usewire/sdk/app';
+
+const webhook = defineWebhook(
+  {
+    'install.created': async (event) => {
+      await db.upsertInstall(event.install.installId, event.install.appUserId, event.install.container.name);
+    },
+    'install.uninstalled': async (event) => {
+      await db.markRemoved(event.install.installId);
+    },
+    'install.claimed': async (event) => {
+      await db.setAppUserId(event.install.installId, event.install.appUserId);
+    },
+    default: (event) => console.log('unhandled', event.type, event.id),
+  },
+  {
+    appId: 'someday',
+    // url: 'https://someday.example/webhooks/wire', // behind a proxy: the registered URL
+    replayStore, // durable and shared in production: see below
+  }
+);
+
+export default {
+  fetch(request: Request) {
+    if (new URL(request.url).pathname === '/webhooks/wire') return webhook.fetch(request);
+    return new Response('Not found', { status: 404 });
+  },
+};
+```
+
+Or one function for every event: `defineWebhook((event, ctx) => { ... }, opts)`.
+**Hono:** `app.post('/webhooks/wire', webhook.hono)`. **Node:**
+`toNodeHandler(webhook, { origin: 'https://someday.example' })`, mounted before
+any JSON body parser.
+
+How it answers, and what Wire does with it:
+
+| Answer | When | Wire |
+|---|---|---|
+| `200 { received: true }` | Your handler returned | Done |
+| `200 { received: true, duplicate: true }` | An event id already received | Done (your handler is not called again) |
+| `200 { received: true, ignored: true }` | No handler for the type and no `default` | Done |
+| `401` / `413` | Not a genuine Wire webhook | Retries, which fail the same way |
+| `500` | Your handler threw | Retries; the event is released, so the retry runs your handler |
+| `503` | Wire's keys or your replay store could not be reached | Retries |
+| Your `Response` | The handler returned one | A non-2xx is retried; **`410 Gone` stops retries of that event at once** |
+
+Wire retries anything but a 2xx for about 24 hours: each round is one attempt
+and one quick retry, and the waits between rounds grow from 1 minute to 8
+hours. It never follows a redirect and waits 8 seconds for an answer, so
+acknowledge quickly and do slow work in the background (a queue, or
+`ctx.waitUntil` in a Worker).
+
+**Duplicates.** Delivery is at least once, and an event keeps its `id` on every
+retry. The SDK records each event id in the replay store before your handler
+runs, and answers a repeat with 200 without calling the handler again. The
+default store is in memory, per instance, and forgets on restart, so **in
+production pass a durable, shared store** that implements `release` (called
+when your handler fails, so the retry is handled):
+
+```typescript
+const replayStore: ReplayStore = {
+  async markUsed(key, ttlSeconds) {
+    return (await redis.set(`wire:${key}`, '1', { NX: true, EX: ttlSeconds })) === 'OK';
+  },
+  async release(key) {
+    await redis.del(`wire:${key}`);
+  },
+};
+```
+
+Event ids are kept for 7 days (`dedupeTtlSec`). Or pass `dedupe: false` and
+dedupe on `event.id` yourself, for example with a unique key in the same
+database transaction as the work.
+
+To verify inside a server you already have, call the check on its own. It takes
+a Fetch `Request` or the raw parts:
+
+```typescript
+import { verifyWireWebhook, WireWebhookError } from '@usewire/sdk/app';
+
+try {
+  const { event, release } = await verifyWireWebhook(request, { appId: 'someday', replayStore });
+  // or: verifyWireWebhook({ headers: req.headers, rawBody, url: req.url }, { appId, origin: 'https://someday.example' })
+  try {
+    await handle(event);
+  } catch {
+    await release(); // so Wire's retry is handled
+    return new Response(null, { status: 500 });
+  }
+  return new Response(null, { status: 200 });
+} catch (err) {
+  // DUPLICATE_EVENT has status 200: acknowledge it.
+  if (err instanceof WireWebhookError) return new Response(err.code, { status: err.status });
+  throw err;
+}
+```
+
+What the verifier checks, for anyone verifying without the SDK:
+
+1. `Authorization: Bearer <jwt>` with header `alg: "EdDSA"`,
+   `typ: "wire-webhook+jwt"` (an action token is not a webhook) and a `kid`,
+   signed by a key in the same JWKS as action calls,
+   `https://app.usewire.io/.well-known/wire-actions-jwks.json`.
+2. `iss` is `"wire"`, `aud` is your app id (the agent id), `exp - iat <= 60`
+   and not expired (30 s of skew).
+3. `wire_url` is your registered webhook URL (normalized as for actions).
+4. `wire_body_sha256` is the base64url SHA-256 of the raw body, checked before
+   parsing.
+5. `wire_event` equals the `X-Wire-Event-Id` header and the body's `id`.
+6. `jti` is single use; the event `id` is deduplicated.
+
+### Trials
+
+A trial is a connect by someone with no Wire account: an ephemeral container
+that lasts 7 days, with the same tools and endpoint. Its install has an
+`installId` right away and `appUserId: null`, and reads
+`container.isEphemeral: true`, `container.ephemeralExpiresAt` and
+`claimed: false`.
+
+While the trial is active, the install also carries `claimUrl`, where the
+person creates an account and keeps the container. It is not a credential and
+works until the trial expires, so it can go in an email; it stops working if
+your app is disconnected or uninstalled first. Since a trial has no
+`appUserId`, keep its `installId` (for example in the user's session or your
+own record of them) to look it up.
+
+A trial app usually subscribes to two events:
+
+- **`install.expiring`**, about a day before the container goes: remind the
+  person, with `event.install.claimUrl`.
+- **`install.claimed`**, when they keep it: `event.install.appUserId` is now
+  set. Store it on your user, as after a normal connect.
+
+If they do not claim it, `install.expired` follows, and the container and its
+data are deleted. After `install.expired` and `install.container_deleted`,
+`getInstall` answers `null`.
+
 ## Runtime
 
 Node 18+, Cloudflare Workers, Deno, Bun. `connect()` needs to drive the
@@ -521,7 +796,9 @@ Rejected promises throw `WireSdkError` with a `code` and HTTP `status` when
 applicable. On `@usewire/sdk/app`, a failed verification throws
 `WireActionAuthError` (`code`, and `status`: 401, 413, or 503 when your app
 could not check), and `defineManifest` throws `WireManifestError` with
-`issues`.
+`issues`. `WireAppClient` throws `WireAppApiError` (a `WireSdkError` with
+`retryable`), and `verifyWireWebhook` throws `WireWebhookError`, whose `status`
+is what to answer with (200 for `DUPLICATE_EVENT`).
 
 ## Migrating from 0.1.x
 
