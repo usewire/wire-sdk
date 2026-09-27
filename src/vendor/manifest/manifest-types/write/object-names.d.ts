@@ -4,6 +4,8 @@
  * Compared case-insensitively.
  */
 export declare const RESERVED_OBJECT_NAMES: Set<string>;
+/** The prefix SQLite reserves for its own objects; see validateObjectName. */
+export declare const RESERVED_OBJECT_PREFIX = "sqlite_";
 /** Identifier-ish rule — an object name has to survive being a column/table label. */
 export declare const OBJECT_NAME_RE: RegExp;
 export declare const MAX_OBJECT_NAME_LENGTH = 80;
