@@ -86,6 +86,29 @@ export interface ToolVisibility {
     mcpEnabled: boolean;
     restEnabled: boolean;
 }
+/** A built-in tool's visibility as a manifest states it (SUP-957): the same shape as an app
+ *  tool's install policy, with the same defaults (on, both transports). */
+export interface ManifestBuiltinTool {
+    enabled?: boolean;
+    transports?: ManifestToolTransports;
+}
+export type ToolTransport = "mcp" | "rest";
+/** What an install does to one built-in tool (SUP-957), for a consent screen. */
+export interface ValidatedBuiltinTool {
+    name: string;
+    /** Did the manifest name this built-in? One it leaves out gets its engine default. */
+    stated: boolean;
+    /** What the built-in reaches, in the same vocabulary as an app tool's capabilities. */
+    capabilities: ToolCapability[];
+    /** The visibility an install sets: the manifest's, defaults filled, or the engine default. */
+    visibility: ToolVisibility;
+    /** The engine default: what a container that no app manages has. */
+    defaultVisibility: ToolVisibility;
+    /** Transports the built-in is listed on by default and not after install. */
+    hides: ToolTransport[];
+    /** Transports the built-in is not listed on by default and is after install. */
+    shows: ToolTransport[];
+}
 export interface ConnectManifest {
     manifest: typeof MANIFEST_FORMAT_VERSION;
     app: {
@@ -97,6 +120,7 @@ export interface ConnectManifest {
     actions: ManifestAction[];
     tools: ManifestTool[];
     base_tools: string[];
+    builtin_tools?: Record<string, ManifestBuiltinTool>;
     analysis?: ManifestAnalysis;
     instructions?: string;
     skill?: string;
@@ -117,10 +141,33 @@ export interface ValidatedManifestTool {
 export declare function requestedAnalysis(m: Pick<ConnectManifest, "analysis"> | null | undefined): RequestedAnalysis;
 /** A manifest tool's requested visibility, defaults filled: on, on both transports. */
 export declare function manifestToolVisibility(t: Pick<ManifestTool, "enabled" | "transports">): ToolVisibility;
+/** The built-in tools a manifest manages (SUP-957): every tool the engine itself defines. Tools a
+ *  host registers on top are not a manifest's to set. */
+export declare const MANIFEST_BUILTIN_TOOL_NAMES: readonly string[];
+/** A built-in's engine default visibility: on, on the transports its definition lists it on. */
+export declare function builtinDefaultVisibility(name: string): ToolVisibility | null;
+/** The transports a visibility lists a tool on. */
+export declare function listedOn(v: ToolVisibility): ToolTransport[];
+/** What going from one visibility to another does, per transport: listed before and not after
+ *  (`hides`), or the other way round (`shows`). A consent screen can compare against the
+ *  container's current visibility with this, not only against the engine default. */
+export declare function visibilityChange(from: ToolVisibility, to: ToolVisibility): {
+    hides: ToolTransport[];
+    shows: ToolTransport[];
+};
+/** Every built-in's visibility under a manifest (SUP-957): the manifest's where it names the
+ *  built-in (defaults filled as for an app tool), the engine default where it does not. In the
+ *  engine's order. `null` (no managing manifest) gives every engine default. */
+export declare function manifestBuiltinVisibility(m: Pick<ConnectManifest, "builtin_tools"> | null | undefined): Array<{
+    name: string;
+    stated: boolean;
+    visibility: ToolVisibility;
+}>;
 export type ManifestValidation = {
     ok: true;
     manifest: ConnectManifest;
     tools: ValidatedManifestTool[];
+    builtinTools: ValidatedBuiltinTool[];
 } | {
     ok: false;
     errors: ValidationError[];
@@ -144,3 +191,7 @@ export declare function manifestSha256(manifest: ConnectManifest): Promise<strin
  *  `lookup` is the base tool registry to check tool mappings against; by default, the tools every
  *  Wire container registers. */
 export declare function validateManifest(raw: unknown, lookup?: BaseToolLookup): ManifestValidation;
+/** What an install of this manifest does to each built-in tool (SUP-957), in the engine's order:
+ *  every built-in, since an install sets them all. `hides` / `shows` compare with the engine
+ *  default; compare with a container's current visibility with `visibilityChange`. */
+export declare function validatedBuiltinTools(m: Pick<ConnectManifest, "builtin_tools">): ValidatedBuiltinTool[];
