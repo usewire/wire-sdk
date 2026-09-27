@@ -4,7 +4,7 @@
 
 - `@usewire/sdk/app`, a separate entry point for Connect apps (SUP-946):
   `defineManifest`, `defineAction` (with Hono and Node adapters),
-  `verifyWireAction`, `MemoryReplayStore`. Verifies Wire's Ed25519-signed
+  `verifyWireAction` (requires `appId` and `action`), `MemoryReplayStore`. Verifies Wire's Ed25519-signed
   action calls against Wire's JWKS. The root entry does not import it.
 - `WireClient.registerManifest()` registers a Connect app manifest, signed
   with the agent's key and bound to the request body.

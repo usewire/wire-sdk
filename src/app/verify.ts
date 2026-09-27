@@ -102,11 +102,11 @@ export interface VerifyWireActionOptions {
    */
   replayStore?: ReplayStore;
   /**
-   * The action this endpoint serves. Set it: without it, a token Wire minted
-   * for another of your actions verifies here too (the request path is not
-   * signed). Mismatches fail ACTION_MISMATCH. defineAction() always sets it.
+   * The action this endpoint serves. Required: the request path is not
+   * signed, so without it a token Wire minted for another of your actions
+   * would verify here too. A token for any other action fails ACTION_MISMATCH.
    */
-  action?: string;
+  action: string;
   /** Clock skew tolerance in seconds. Default 30 (what Wire assumes), capped at 60. */
   clockToleranceSec?: number;
   /** Largest body read for hashing. Default 1 MiB; larger bodies fail BODY_TOO_LARGE. */
@@ -155,6 +155,9 @@ export async function verifyWireActionRequest(
   options: VerifyWireActionOptions
 ): Promise<{ verified: VerifiedWireAction; body: Uint8Array<ArrayBuffer> }> {
   if (!options?.appId) throw new TypeError('verifyWireAction: appId is required');
+  if (typeof options.action !== 'string' || !options.action) {
+    throw new TypeError('verifyWireAction: action is required (the action this endpoint serves)');
+  }
   const tolerance = Math.min(
     Math.max(0, options.clockToleranceSec ?? DEFAULT_CLOCK_TOLERANCE_SEC),
     MAX_CLOCK_TOLERANCE_SEC
@@ -219,7 +222,7 @@ export async function verifyWireActionRequest(
 
   // 4. Shape of the claims jose does not check.
   const claims = checkClaims(payload, options.appId);
-  if (options.action !== undefined && claims.wire_action !== options.action) {
+  if (claims.wire_action !== options.action) {
     throw new WireActionAuthError(
       'ACTION_MISMATCH',
       `Token is for action "${claims.wire_action}", not "${options.action}"`

@@ -8,7 +8,7 @@
  *
  *   - defineManifest(manifest)                typed, locally checked manifest
  *   - defineAction(manifest, name, handler)   a verified fetch handler for one action
- *   - verifyWireAction(request, { appId })    verification alone, for your own server
+ *   - verifyWireAction(request, { appId, action })  verification alone, for your own server
  *   - toNodeHandler(endpoint)                 Node (req, res) adapter
  *
  * Kept apart from the root entry (the connection manager) so apps that only

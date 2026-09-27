@@ -339,9 +339,9 @@ A few things worth knowing:
   values, and routine 401s are not logged. Pass `onError` to route them
   elsewhere.
 
-To verify inside a server you already have, call the check on its own. Always
-pass `action`: the request path is not signed, so without it a call Wire made
-to another of your actions would verify here too.
+To verify inside a server you already have, call the check on its own.
+`action` is required: the request path is not signed, so without it a call
+Wire made to another of your actions would verify here too.
 
 ```typescript
 import { verifyWireAction, WireActionAuthError } from '@usewire/sdk/app';

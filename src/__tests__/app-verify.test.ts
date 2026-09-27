@@ -37,6 +37,7 @@ afterEach(() => {
 function opts(extra: Partial<VerifyWireActionOptions> = {}): VerifyWireActionOptions {
   return {
     appId: 'geo-app',
+    action: 'geocode',
     jwksUrl: uniqueUrl(server),
     now: NOW,
     replayStore: new MemoryReplayStore(),
@@ -303,7 +304,16 @@ describe('verifyWireAction', () => {
   });
 
   it('requires appId', async () => {
-    await expect(verifyWireAction(actionRequest('a.b.c', BODY), { appId: '' })).rejects.toThrow(/appId/);
+    await expect(verifyWireAction(actionRequest('a.b.c', BODY), { appId: '', action: 'geocode' })).rejects.toThrow(/appId/);
+  });
+
+  it('requires action, since the request path is not signed', async () => {
+    const token = await signAction({ key, body: BODY });
+    const { action: _omit, ...withoutAction } = opts();
+    await expect(
+      verifyWireAction(actionRequest(token, BODY), withoutAction as VerifyWireActionOptions)
+    ).rejects.toThrow(/action is required/);
+    await expect(verifyWireAction(actionRequest(token, BODY), opts({ action: '' }))).rejects.toThrow(TypeError);
   });
 });
 
