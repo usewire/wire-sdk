@@ -329,6 +329,7 @@ describe('defineManifest', () => {
     ['an action without a description', { ...valid, actions: [{ ...valid.actions[0], description: ' ' }] }, 'actions.0.description'],
     ['a non-https action URL', { ...valid, actions: [{ ...valid.actions[0], url: 'http://geo-app.example/x' }] }, 'actions.0.url'],
     ['a private-address action URL', { ...valid, actions: [{ ...valid.actions[0], url: 'https://10.0.0.1/x' }] }, 'actions.0.url'],
+    ['a cloud metadata host as action URL', { ...valid, actions: [{ ...valid.actions[0], url: 'https://metadata.google.internal/x' }] }, 'actions.0.url'],
     ['a timeout over 8 seconds', { ...valid, actions: [{ ...valid.actions[0], timeout_ms: 30_000 }] }, 'actions.0.timeout_ms'],
     ['duplicate action names', { ...valid, actions: [valid.actions[0], valid.actions[0]] }, 'actions.1.name'],
     ['a missing output schema', { ...valid, actions: [{ ...valid.actions[0], output: undefined }] }, 'actions.0.output'],

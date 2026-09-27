@@ -9,3 +9,11 @@ export declare function parseIPv6(s: string): number[] | null;
 export declare function addressProblem(address: string): string | null;
 /** Is this string an IP literal (so it names an address, not a hostname)? */
 export declare function isIpLiteral(host: string): boolean;
+/** Refused on every host, whatever is configured. */
+export declare const ALWAYS_DENIED_HOSTS: readonly string[];
+/** A hostname in its comparable form: lowercase, no trailing dot, no IPv6 brackets. */
+export declare function normalizeHost(host: string): string;
+/** Parse a deny-list: comma- or whitespace-separated entries, normalized, empties dropped. */
+export declare function parseDenyHosts(raw: string | readonly string[] | undefined | null): string[];
+/** The deny-list entry that refuses this host, or null. Always includes ALWAYS_DENIED_HOSTS. */
+export declare function deniedHostEntry(host: string, denyHosts?: readonly string[]): string | null;
