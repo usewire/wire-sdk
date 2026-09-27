@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    name: Type-check, build, test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 'lts/*'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run type-check
+      - run: npm run build
+      - run: npm test
+
+  manifest-validator:
+    # src/vendor/manifest is a build of the engine's manifest validator at the
+    # usewire/wire commit in MANIFEST_REF. Rebuild it from that commit and fail
+    # on any difference, so the vendored copy is exactly what the pin says.
+    name: Vendored manifest validator matches MANIFEST_REF
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: ref
+        run: echo "sha=$(tr -d '[:space:]' < MANIFEST_REF)" >> "$GITHUB_OUTPUT"
+      - name: Check out usewire/wire at MANIFEST_REF
+        uses: actions/checkout@v4
+        with:
+          repository: usewire/wire
+          ref: ${{ steps.ref.outputs.sha }}
+          path: .wire-oss
+          # usewire/wire is private until it is published: a read-only token for it.
+          token: ${{ secrets.WIRE_OSS_READ_TOKEN }}
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.13
+      - name: Rebuild the vendored validator
+        run: WIRE_OSS_DIR=.wire-oss scripts/vendor-manifest.sh
+      - name: Fail on any difference
+        run: |
+          if [ -n "$(git status --porcelain -- src/vendor)" ]; then
+            git status --porcelain -- src/vendor
+            git --no-pager diff --stat -- src/vendor
+            echo "src/vendor/manifest does not match usewire/wire@$(cat MANIFEST_REF). Run scripts/vendor-manifest.sh and commit." >&2
+            exit 1
+          fi

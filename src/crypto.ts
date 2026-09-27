@@ -74,6 +74,13 @@ export async function signConnectJwt(args: {
   privateJwk: JsonWebKey;
   /** server-assigned credential id, or null for first-run bootstrap */
   credentialId: string | null;
+  /**
+   * Extra private claims (e.g. `body_sha256` on registerManifest). Cannot
+   * override the registered claims above.
+   */
+  claims?: Record<string, unknown>;
+  /** `aud`. Default 'wire-api' (connect); registerManifest uses 'wire-manifest'. */
+  audience?: string;
 }): Promise<string> {
   const { agentId, privateJwk, credentialId } = args;
   const key = await importJWK({ ...privateJwk, alg: 'EdDSA' }, 'EdDSA');
@@ -81,10 +88,10 @@ export async function signConnectJwt(args: {
   if (credentialId) header.kid = credentialId;
 
   const now = Math.floor(Date.now() / 1000);
-  const jwt = await new SignJWT({})
+  const jwt = await new SignJWT({ ...(args.claims ?? {}) })
     .setProtectedHeader(header)
     .setIssuer(agentId)
-    .setAudience('wire-api')
+    .setAudience(args.audience ?? 'wire-api')
     .setSubject(credentialId ?? 'bootstrap')
     .setJti(randomJti())
     .setIssuedAt(now)
