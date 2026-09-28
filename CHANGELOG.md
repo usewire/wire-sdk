@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.12.0
+
+Agent links. A manifest's tools can now connect the records they write, and
+delete a record together with the records linked to it.
+
+- Vendors the manifest validator at usewire/wire@f8b83f7 (the engine PR's head;
+  re-pin to the merged commit before release). `defineManifest` accepts two new
+  base-tool arguments and checks them like any other:
+  - `wire_write` `links`: `[{ to, type, properties? }]`, for example
+    `links: [{ to: '{{input.place_id}}', type: 'about' }]`. `to` is required,
+    so an input it comes from must be required in the tool's `inputSchema`.
+  - `wire_delete` `withLinked`: `{ types, direction: 'incoming' }`, for example
+    `withLinked: { types: ['about'], direction: 'incoming' }` to delete a place
+    and the notes about it.
+
 ## 0.11.0
 
 Agent skills (SUP-962). A manifest's `skill` and `instructions` now reach the
