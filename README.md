@@ -286,19 +286,39 @@ is behind.
 A manifest can tell the agents that use a container your agent manages how to
 use it, in two ways:
 
+- **`instructions`**: sent as the MCP server instructions in the answer to
+  `initialize`, so every client gets them when it connects, and most clients
+  put them in front of the model. At most 16,000 characters. If you give a
+  skill and no instructions, connecting clients get one line pointing at the
+  skill instead.
 - **`skill`**: a `SKILL.md` in the [Agent Skills](https://agentskills.io/specification)
-  format, which is the full usage guide (at most 64,000 characters). When your
-  agent is installed, the container serves it over MCP's Skills extension
-  (`io.modelcontextprotocol/skills`) as `skill://<name>/SKILL.md`. Clients that
-  support skills load it when it's relevant, and any client can read it as a
-  resource. Reading it is free for the user.
-- **`instructions`**: the MCP server instructions every client gets when it
-  connects (at most 16,000 characters). Keep this short, for clients that never
-  load skills. If you give a skill and no instructions, connecting clients are
-  pointed at the skill instead.
+  format, the full usage guide. At most 64,000 characters. When your agent is
+  installed, the container serves it over MCP's Skills extension
+  (`io.modelcontextprotocol/skills`) as `skill://<name>/SKILL.md`. Hosts that
+  support Skills load it on demand, when it's relevant, and check it against
+  the digest the container lists for it. Any client can also read it as a
+  resource. Reading it is free: it costs the user no credits.
+
+Write `instructions` as the few rules an agent must follow even if it never
+opens the skill, and make the skill complete on its own. A host that loads the
+skill may not show the instructions next to it, and a client that never loads
+skills only has the instructions.
+
+The frontmatter `name` is the skill's directory, and so part of its URI: a
+skill named `geo-app` is served as `skill://geo-app/SKILL.md`. It must be 1 to
+64 lowercase letters, digits and hyphens, with no leading, trailing or doubled
+hyphen. Refer to the skill by that URI from `instructions`.
 
 The user sees both on the consent screen and can read them in full before
-approving. An update that changes either one says so.
+approving. When they change:
+
+- **Existing installs** start serving the skill and instructions of the
+  version their user approved the next time the container opens, including
+  installs made before Wire served skills. Nobody has to reconnect.
+- **An update** ships the way every manifest change does: register it with a
+  bumped `app.version`. The consent screen says the skill or instructions
+  changed, and the new ones reach a container after its user approves the
+  upgrade. Until then, the container keeps serving the version they approved.
 
 ```typescript
 import { defineManifest, defineSkill } from '@usewire/sdk/agent';
@@ -326,8 +346,9 @@ The frontmatter takes these fields:
 
 - `name` and `description`, both required. `description` is at most 1,024
   characters.
-- `license`, `compatibility` (at most 500 characters) and `metadata` (string
-  keys to string values), all optional.
+- `license` and `compatibility` (each at most 500 characters) and `metadata`
+  (at most 64 string keys, each to a string value of at most 1,024
+  characters), all optional.
 
 Any other field is refused, and so is `allowed-tools`, because a skill a
 container serves can't pre-approve tools on the user's machine.
