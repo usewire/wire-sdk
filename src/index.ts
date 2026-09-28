@@ -8,10 +8,11 @@
  *   and manages containers in your own organization — containers.create /
  *   list / update / delete, plus whoami.
  *
- * The app side (verifying Wire's calls to a Connect app's actions, serving
- * them, typing the manifest) lives on the separate `@usewire/sdk/app` entry
- * so this one stays small. `WireClient.registerManifest()` is here because it
- * is an app→Wire call like connect.
+ * The agent side (verifying Wire's calls to an agent's actions and webhooks,
+ * serving them, typing the manifest, reading installs) lives on the separate
+ * `@usewire/sdk/agent` entry (`@usewire/sdk/app` is the same entry under its
+ * pre-0.10 name) so this one stays small. `WireClient.registerManifest()` is
+ * here because it is an agent→Wire call like connect.
  *
  * The SDK is stateless. connect() returns a Connection with everything
  * you need (mcpUrl, apiKey, deviceKey, container metadata). The caller
@@ -47,6 +48,16 @@ export type {
 
 export { WireSdkError } from './types.js';
 
+export {
+  CONTAINER_AGENT_MANAGED,
+  CONTAINER_APP_MANAGED,
+  isAgentManagedCode,
+  isAgentManagedError,
+  managedByFromError,
+  readManagedBy,
+} from './managed.js';
+export type { WireManagedBy } from './managed.js';
+
 // Type-only: the manifest shape registerManifest() takes. The runtime lives
-// on @usewire/sdk/app.
+// on @usewire/sdk/agent.
 export type { WireManifest } from './app/manifest.js';

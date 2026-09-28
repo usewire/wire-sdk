@@ -54,6 +54,8 @@ describe('WireClient.registerManifest', () => {
     const result = await client.registerManifest(manifest);
 
     expect(result).toEqual({
+      // An older server sends only app_id; the agent id is derived from it.
+      agentId: 'geo-app',
       appId: 'geo_app',
       version: '0.1.0',
       hash: 'h1',

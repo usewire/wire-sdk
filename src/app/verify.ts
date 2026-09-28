@@ -3,10 +3,10 @@
  *
  * Wire signs every action call with its own Ed25519 key (SUP-946): a short
  * EdDSA JWT in `Authorization: Bearer`, verified against Wire's public JWKS.
- * The app holds no secret. What a valid call proves:
+ * The agent holds no secret. What a valid call proves:
  *
  *   - Wire sent it (signature against a key in Wire's JWKS, looked up by `kid`);
- *   - for THIS app (`aud` is exactly the app id);
+ *   - for THIS agent (`aud` is exactly its manifest `app.id`: the agent id with `-` as `_`);
  *   - just now (`iat`/`exp`, at most 60 seconds apart, small clock tolerance);
  *   - once (`jti` recorded in a replay store);
  *   - with THIS body (SHA-256 of the raw body bytes equals the signed hash);
@@ -75,7 +75,7 @@ export const WIRE_ACTION_CLAIMS = {
 
 /** Longest `exp - iat` accepted. Wire mints 60-second tokens. */
 export const MAX_TOKEN_LIFETIME_SEC: number = ACTION_JWT_TTL_SECONDS;
-/** Default tolerance for clock skew between Wire and the app (the engine's value). */
+/** Default tolerance for clock skew between Wire and the agent (the engine's value). */
 export const DEFAULT_CLOCK_TOLERANCE_SEC: number = ACTION_JWT_CLOCK_SKEW_SECONDS;
 /** Default ceiling on the request body read for hashing. */
 export const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
@@ -102,8 +102,17 @@ export interface WireActionClaims extends JWTPayload {
 }
 
 export interface VerifyWireActionOptions {
-  /** Your app id: the `aud` Wire signs for. The agent id you registered. */
-  appId: string;
+  /**
+   * Your agent id (`geo-app`). Wire signs action calls for the manifest form of
+   * it (`geo_app`, the manifest's `app.id`); either form is accepted here.
+   * Required unless the deprecated `appId` is set.
+   */
+  agentId?: string;
+  /**
+   * @deprecated Use `agentId`. The exact `aud` to require (the manifest's
+   * `app.id`), compared as given.
+   */
+  appId?: string;
   /** Wire's JWKS URL. https only (http allowed for localhost). Defaults to DEFAULT_WIRE_JWKS_URL. */
   jwksUrl?: string;
   /** The current time, for tests. A Date or a function returning one. */
@@ -121,10 +130,10 @@ export interface VerifyWireActionOptions {
   action: string;
   /**
    * The public URL Wire calls this endpoint at: the action's `url` in your
-   * manifest. Defaults to `request.url`, which is right when the app sees the
+   * manifest. Defaults to `request.url`, which is right when the agent sees the
    * request as Wire sent it (a Cloudflare Worker, Bun or Deno serving the
    * public hostname directly). Set it when a proxy, load balancer or TLS
-   * terminator changes the scheme, host, port or path the app sees; then the
+   * terminator changes the scheme, host, port or path the agent sees; then the
    * token's `wire_url` is checked against this value instead. See
    * `normalizeActionUrl` for how the two are compared.
    */
@@ -136,7 +145,7 @@ export interface VerifyWireActionOptions {
 }
 
 export interface VerifiedWireAction {
-  /** The connection (install of your app on a container) making the call. */
+  /** The connection (install of your agent on a container) making the call. */
   connectionId: string;
   /** The container the call comes from. */
   containerId: string;
@@ -176,7 +185,8 @@ export async function verifyWireActionRequest(
   request: Request,
   options: VerifyWireActionOptions
 ): Promise<{ verified: VerifiedWireAction; body: Uint8Array<ArrayBuffer> }> {
-  if (!options?.appId) throw new TypeError('verifyWireAction: appId is required');
+  const audience = actionAudience(options);
+  if (!audience) throw new TypeError('verifyWireAction: agentId is required');
   if (typeof options.action !== 'string' || !options.action) {
     throw new TypeError('verifyWireAction: action is required (the action this endpoint serves)');
   }
@@ -228,7 +238,7 @@ export async function verifyWireActionRequest(
       algorithms: ['EdDSA'],
       typ: WIRE_ACTION_JWT_TYP,
       issuer: WIRE_ACTION_ISSUER,
-      audience: options.appId,
+      audience,
       currentDate,
       clockTolerance: tolerance,
       maxTokenAge: MAX_TOKEN_LIFETIME_SEC + tolerance,
@@ -250,7 +260,7 @@ export async function verifyWireActionRequest(
   }
 
   // 4. Shape of the claims jose does not check.
-  const claims = checkClaims(payload, options.appId);
+  const claims = checkClaims(payload, audience);
   if (claims.wire_action !== options.action) {
     throw new WireActionAuthError(
       'ACTION_MISMATCH',
@@ -276,7 +286,7 @@ export async function verifyWireActionRequest(
     // accept this token (lifetime plus skew either side), so a shared store
     // stays correct across instances whose clocks disagree.
     fresh = await replayStore.markUsed(
-      `${claims.iss}|${options.appId}|${claims.jti}`,
+      `${claims.iss}|${audience}|${claims.jti}`,
       MAX_TOKEN_LIFETIME_SEC + 2 * MAX_CLOCK_TOLERANCE_SEC + 1
     );
   } catch (err) {
@@ -420,7 +430,7 @@ let warnedDefaultStore = false;
 
 /**
  * The in-memory default only protects one isolate, and a Worker under real
- * traffic runs many. Say so once, where the app author will see it.
+ * traffic runs many. Say so once, where the agent's author will see it.
  */
 /** @internal Shared with the webhook verifier. */
 export function defaultReplayStoreWithWarning(): ReplayStore {
@@ -451,7 +461,7 @@ function mapJoseError(err: unknown): WireActionAuthError {
   if (err instanceof joseErrors.JWTClaimValidationFailed) {
     if (err.claim === 'typ') return new WireActionAuthError('MALFORMED_TOKEN', `JWT typ must be ${WIRE_ACTION_JWT_TYP}`);
     if (err.claim === 'iss') return new WireActionAuthError('INVALID_ISSUER', 'Token issuer is not Wire');
-    if (err.claim === 'aud') return new WireActionAuthError('INVALID_AUDIENCE', 'Token is not for this app');
+    if (err.claim === 'aud') return new WireActionAuthError('INVALID_AUDIENCE', 'Token is not for this agent');
     return new WireActionAuthError('INVALID_CLAIMS', `Claim check failed: ${err.claim} (${err.reason})`);
   }
   if (err instanceof joseErrors.JWSSignatureVerificationFailed) {
@@ -467,13 +477,23 @@ function isId(v: unknown): v is string {
   return typeof v === 'string' && v.length > 0 && v.length <= MAX_ID_CHARS;
 }
 
+/**
+ * The `aud` an action call must carry: the manifest form of `agentId`
+ * (`geo-app` -> `geo_app`, what Wire signs), or the deprecated `appId` as given.
+ */
+export function actionAudience(options: { agentId?: unknown; appId?: unknown } | undefined): string | null {
+  if (typeof options?.agentId === 'string' && options.agentId) return options.agentId.replace(/-/g, '_');
+  if (typeof options?.appId === 'string' && options.appId) return options.appId;
+  return null;
+}
+
 function checkClaims(payload: JWTPayload, appId: string): WireActionClaims {
   // jose accepts an aud ARRAY containing appId among others; an action token
   // has exactly one audience (a one-element array is the same thing, as the
   // engine's validateActionClaims also allows).
   const aud = payload.aud;
   if (!(aud === appId || (Array.isArray(aud) && aud.length === 1 && aud[0] === appId))) {
-    throw new WireActionAuthError('INVALID_AUDIENCE', 'Token is not for this app');
+    throw new WireActionAuthError('INVALID_AUDIENCE', 'Token is not for this agent');
   }
   const p = payload as Record<string, unknown>;
   const iat = payload.iat;

@@ -66,13 +66,14 @@ interface Connection {
   deviceKey: DeviceKey;
   connectedAt: Date;
   label?: string;
-  installId: string | null;  // 0.9.0: stable per app, user and container; not a credential
-  appUserId: string | null;  // 0.9.0: pairwise per app and user; null on an unclaimed trial
+  installId: string | null;    // stable per agent, user and container; not a credential
+  agentUserId: string | null;  // pairwise per agent and user; null on an unclaimed trial
+  appUserId: string | null;    // deprecated: the same value as agentUserId
 }
 ```
 
-`installId` and `appUserId` grant nothing, so they are safe to keep in your
-own database next to your user. A Connect app keeps them instead of the API key
+`installId` and `agentUserId` grant nothing, so they are safe to keep in your
+own database next to your user. An agent keeps them instead of the API key
 and reads the install later from its server: see
 [Look up installs from your server](#look-up-installs-from-your-server). Both
 are null from a Wire server older than 0.9.0's.
@@ -178,24 +179,28 @@ myUi.show(`Sign up to keep your container: ${url}`);
 (`pending.expiresAt`, ~10 minutes). `getClaimUrl()` links last 30 minutes
 and throws `ALREADY_CLAIMED` on permanent containers.
 
-## Building a Connect app
+## Bringing a manifest
 
-A Connect app can do more than read and write a container. Its manifest can
-install custom tools into the container the user connects, and those tools can
-call the app's own HTTPS functions, called actions, before or after the Wire
-tool they wrap. A `save_place` tool, for example, can call your `geocode`
+An agent can do more than read and write a container. It may bring a
+manifest, which installs custom tools into the container the user connects,
+and those tools can call the agent's own HTTPS functions, called actions,
+before or after the Wire tool they wrap. An install is the agent's manifest
+applied to one container. A `save_place` tool, for example, can call your `geocode`
 action on the address and then save the place with coordinates.
 
-Wire calls your actions. Your app never calls the container for them, stores
+Wire calls your actions. Your agent never calls the container for them, stores
 no secret, and gets nothing at install time. Every call is signed with Wire's
 own Ed25519 key, and you check it against Wire's published keys.
 
-The app side lives on its own entry point, so apps that only connect never
+The agent side lives on its own entry point, so agents that only connect never
 load it:
 
 ```typescript
-import { defineManifest, defineAction } from '@usewire/sdk/app';
+import { defineManifest, defineAction } from '@usewire/sdk/agent';
 ```
+
+`@usewire/sdk/app` is the same entry under its pre-0.10 name and keeps
+working.
 
 > **Status:** actions ship with the Wire release that runs them. Until then the
 > manifest format, the action-call claims and the registration endpoint may
@@ -205,7 +210,7 @@ import { defineManifest, defineAction } from '@usewire/sdk/app';
 
 ```typescript
 // manifest.ts
-import { defineManifest } from '@usewire/sdk/app';
+import { defineManifest } from '@usewire/sdk/agent';
 
 export const manifest = defineManifest({
   manifest: 1,
@@ -214,7 +219,7 @@ export const manifest = defineManifest({
     {
       name: 'geocode',
       description:
-        'Turns a street address into coordinates and a city. The address is sent to the app; nothing is stored there.',
+        'Turns a street address into coordinates and a city. The address is sent to the agent; nothing is stored there.',
       url: 'https://geo-app.example.workers.dev/geocode',
       input: {
         type: 'object',
@@ -255,9 +260,10 @@ export const manifest = defineManifest({
 });
 ```
 
-- `app.id` is the agent id you registered with Wire: lowercase letters, digits
-  and underscores. It is also the audience of every action call, so a call
-  meant for another app never verifies in yours.
+- `app.id` is the manifest id: the agent id you registered with Wire, with `-`
+  as `_` (lowercase letters, digits and underscores). It is also the audience
+  of every action call, so a call meant for another agent never verifies in
+  yours.
 - Every action needs a plain `description`. The user sees it on the consent
   screen, so say what the action receives and whether you keep it.
 - `url` must be https on a public host. Wire calls exactly this URL and signs
@@ -265,7 +271,7 @@ export const manifest = defineManifest({
 - An action receives only the fields its tool's mapping sends it.
 
 `defineManifest` runs Wire's own manifest validator, the same one Wire runs
-when you register and a container runs when it installs your app, so a
+when you register and a container runs when it installs your agent, so a
 manifest that passes locally is one Wire accepts. It returns the normalized
 manifest (defaults filled in) or throws `WireManifestError` listing every
 problem with its path, such as `actions.0.url`. `validateManifest` is exported
@@ -317,11 +323,13 @@ const client = new WireClient({
   deviceKey: { privateJwk, publicKey: publicKeyB64, credentialId: 'pk_…' },
 });
 const registered = await client.registerManifest(manifest);
-// { appId, version, hash, status: 'created' | 'updated' | 'unchanged', tools, baseTools, actions }
+// { agentId, appId, version, hash, status: 'created' | 'updated' | 'unchanged', tools, baseTools, actions }
 ```
 
 `manifest.app.id` must be your agent id with `-` changed to `_` (agent
-`geo-app`, app id `geo_app`), because app ids become tool-name prefixes.
+`geo-app`, manifest id `geo_app`), because manifest ids become tool-name
+prefixes. `registered.agentId` is the agent id and `registered.appId` the
+manifest id.
 
 Registering an identical document again answers `unchanged`. Bump
 `app.version` to ship a change. Errors throw `WireSdkError`:
@@ -343,7 +351,7 @@ It also answers before Wire's timeout would fire (504), and aborts
 
 ```typescript
 // worker.ts
-import { defineAction, WireActionError } from '@usewire/sdk/app';
+import { defineAction, WireActionError } from '@usewire/sdk/agent';
 import { manifest } from './manifest';
 
 const geocode = defineAction<{ address: string }, { lat: number; lng: number; locality?: string }>(
@@ -412,11 +420,11 @@ To verify inside a server you already have, call the check on its own.
 verifies here.
 
 ```typescript
-import { verifyWireAction, WireActionAuthError } from '@usewire/sdk/app';
+import { verifyWireAction, WireActionAuthError } from '@usewire/sdk/agent';
 
 try {
   const { connectionId, containerId, action } = await verifyWireAction(request, {
-    appId: 'geo_app',
+    agentId: 'geo-app', // Wire signs for the manifest id, geo_app
     action: 'geocode',
     // url: 'https://geo-app.example.workers.dev/geocode', // behind a proxy
   });
@@ -431,7 +439,7 @@ try {
 
 Each call carries a one-time `jti`. The SDK records it, and a second call with
 the same `jti` is refused. The default record is in memory, which protects one
-process. **If your app runs more than one instance, pass a shared store**:
+process. **If your agent runs more than one instance, pass a shared store**:
 every Cloudflare Worker under real traffic runs many isolates, and a captured
 call could otherwise be replayed once against each of them within its 60
 seconds.
@@ -441,7 +449,7 @@ step. Workers KV is eventually consistent and is not suitable. Redis `SET NX`,
 a Durable Object, or a unique-key insert are.
 
 ```typescript
-import type { ReplayStore } from '@usewire/sdk/app';
+import type { ReplayStore } from '@usewire/sdk/agent';
 
 const replayStore: ReplayStore = {
   async markUsed(key, ttlSeconds) {
@@ -471,7 +479,7 @@ Any language with an EdDSA-capable JWT library can verify an action call.
    | Claim | Check |
    |---|---|
    | `iss` | exactly `"wire"` |
-   | `aud` | exactly your app id (a single string) |
+   | `aud` | exactly your manifest id, `app.id` (a single string) |
    | `sub` | the connection id |
    | `wire_container` | the container the call comes from |
    | `wire_action` | the action this endpoint serves |
@@ -490,18 +498,18 @@ import { createRemoteJWKSet, jwtVerify } from 'jose';
 
 const JWKS = createRemoteJWKSet(new URL('https://app.usewire.io/.well-known/wire-actions-jwks.json'));
 
-async function verify(request: Request, appId: string, action: string, publicUrl: string) {
+async function verify(request: Request, manifestId: string, action: string, publicUrl: string) {
   const token = request.headers.get('authorization')?.replace(/^Bearer /, '') ?? '';
   const { payload } = await jwtVerify(token, JWKS, {
     algorithms: ['EdDSA'],
     typ: 'wire-action+jwt',
     issuer: 'wire',
-    audience: appId,
+    audience: manifestId,
     clockTolerance: 30,
     maxTokenAge: 90,
     requiredClaims: ['sub', 'jti', 'iat', 'exp', 'wire_container', 'wire_action', 'wire_url', 'wire_body_sha256'],
   });
-  if (payload.aud !== appId || payload.exp! - payload.iat! > 60) throw new Error('bad token');
+  if (payload.aud !== manifestId || payload.exp! - payload.iat! > 60) throw new Error('bad token');
   if (payload.wire_action !== action) throw new Error('token is for another action');
   const norm = (u: string) => { const x = new URL(u); return `${x.protocol}//${x.host}${x.pathname}${x.search}`; };
   if (norm(payload.wire_url as string) !== norm(publicUrl)) throw new Error('token is for another URL');
@@ -518,28 +526,28 @@ async function verify(request: Request, appId: string, action: string, publicUrl
 
 ### Look up installs from your server
 
-To show "connected to Places, manage it in Wire" on a later visit, your app
+To show "connected to Places, manage it in Wire" on a later visit, your agent
 does not need to keep anyone's API key. Keep the two ids every connect returns,
 and ask Wire about them from your server:
 
 | Id | One per | Notes |
 |---|---|---|
-| `installId` (`ins_…`) | app, user and container | Survives a reconnect of the same user to the same container |
-| `appUserId` (`au_…`) | app and user | Pairwise: another app gets a different id for the same person, and it never reveals their Wire account. Null on an unclaimed trial, set when it is claimed |
+| `installId` (`ins_…`) | agent, user and container | Survives a reconnect of the same user to the same container |
+| `agentUserId` (`au_…`) | agent and user | Pairwise: another agent gets a different id for the same person, and it never reveals their Wire account. Null on an unclaimed trial, set when it is claimed |
 
-A typical pattern: when the connect completes, store `appUserId` on your user
-(and `installId` if your app uses one container per user). Throw the API key
-away if your app does not call the container itself. When you render a
+A typical pattern: when the connect completes, store `agentUserId` on your user
+(and `installId` if your agent uses one container per user). Throw the API key
+away if your agent does not call the container itself. When you render a
 settings or manage page, list that user's installs.
 
 Your server authenticates with a **runtime key**, an Ed25519 key registered for
-your app with `purpose: "runtime"`. It is separate from the publisher key that
+your agent with `purpose: "runtime"`. It is separate from the publisher key that
 registers your manifest, and neither is accepted in place of the other: the key
-a live server holds can read and uninstall your own app's installs and nothing
+a live server holds can read and uninstall your own agent's installs and nothing
 else. Generate one and register its public half:
 
 ```typescript
-import { generateRuntimeKey } from '@usewire/sdk/app';
+import { generateRuntimeKey } from '@usewire/sdk/agent';
 
 const { privateJwk, publicKey } = await generateRuntimeKey();
 // Keep JSON.stringify(privateJwk) as a server secret. Register publicKey:
@@ -552,61 +560,64 @@ curl -X POST https://app.usewire.io/api/v1/agents/someday/publisher-keys \
 # → { "success": true, "data": { "id": "pk_…", "purpose": "runtime" } }
 ```
 
-The caller needs `organization: update` on your app's owner org. The answer's
+The caller needs `organization: update` on your agent's owner org. The answer's
 `id` is the key id. Revoke a key with
-`DELETE /api/v1/agents/{appId}/publisher-keys/{keyId}`.
+`DELETE /api/v1/agents/{agentId}/publisher-keys/{keyId}`.
 
 Then, in a Worker (or Node 18+, Bun, Deno):
 
 ```typescript
-import { WireAppClient } from '@usewire/sdk/app';
+import { WireAgentClient } from '@usewire/sdk/agent';
 
-const wire = new WireAppClient({
-  appId: 'someday',
+const wire = new WireAgentClient({
+  agentId: 'someday',
   runtimeKey: { privateJwk: env.WIRE_RUNTIME_KEY, keyId: env.WIRE_RUNTIME_KEY_ID },
   // baseUrl: 'https://preview.app.usewire.io',
 });
 
-const installs = await wire.listInstalls(user.wireAppUserId); // [] if none
+const installs = await wire.listInstalls(user.wireAgentUserId); // [] if none
 for (const i of installs) {
   i.container.name;          // "Places" (null once the container is deleted)
   i.connection.status;       // "active" | "revoked"
-  i.connection.reason;       // when revoked: user_disconnected | app_disconnected | uninstalled | container_deleted | expired
+  i.connection.reason;       // when revoked: user_disconnected | agent_disconnected | uninstalled | container_deleted | expired
   i.connection.lastUsedAt;   // Date | null
-  i.manageUrl;               // link to the container's installed apps in Wire
+  i.manageUrl;               // link to the container's installed agents in Wire
 }
 
-const one = await wire.getInstall(user.wireInstallId); // null if your app has no such install
+const one = await wire.getInstall(user.wireInstallId); // null if your agent has no such install
 await wire.revokeInstall(user.wireInstallId);         // uninstall; resolves with the install, now revoked
 ```
 
 | Method | Wire endpoint | Returns |
 |---|---|---|
-| `getInstall(installId)` | `GET /api/v1/apps/{appId}/installs/{installId}` | `WireInstall`, or `null` for an install your app does not have |
-| `listInstalls(appUserId)` | `GET /api/v1/apps/{appId}/users/{appUserId}/installs` | `WireInstall[]`, newest first; `[]` for a user your app does not know |
-| `revokeInstall(installId)` | `DELETE /api/v1/apps/{appId}/installs/{installId}` | `WireInstall` (revoked, `uninstalled`) |
+| `getInstall(installId)` | `GET /api/v1/agents/{agentId}/installs/{installId}` | `WireInstall`, or `null` for an install your agent does not have |
+| `listInstalls(agentUserId)` | `GET /api/v1/agents/{agentId}/users/{agentUserId}/installs` | `WireInstall[]`, newest first; `[]` for a user your agent does not know |
+| `revokeInstall(installId)` | `DELETE /api/v1/agents/{agentId}/installs/{installId}` | `WireInstall` (revoked, `uninstalled`) |
 
-An app only ever sees its own installs: another app's ids answer as if they did
+An agent only ever sees its own installs: another agent's ids answer as if they did
 not exist. A revoked install stays readable, with `connection.status:
 "revoked"` and a `reason`. The install never includes an API key, the
 container's contents, the user's Wire account id, or their email.
 
 `revokeInstall` does what the container owner's **Uninstall** button does: your
-app's connections to that container end (every user's, since uninstalling is
+agent's connections to that container end (every user's, since uninstalling is
 per container), Wire's built-in tools and the analysis graphs go back to their
 defaults, and the data stays. Disconnecting without uninstalling stays a
 dashboard action.
 
-Each call signs a fresh token (`iss` your app id, `aud: "wire-app-api"`, a
+Each call signs a fresh token (`iss` your agent id, `aud: "wire-agent-api"`, a
 60-second lifetime, a single-use `jti`, and on `DELETE` a `body_sha256` of the
-empty body). Failures throw `WireAppApiError`, a `WireSdkError` with Wire's
-`code`, the HTTP `status`, and `retryable`:
+empty body). Before 0.10 the client called `/api/v1/apps/{appId}/...` with
+`aud: "wire-app-api"`; Wire still answers those, marked deprecated, and
+`new WireAgentClient({ ..., apiVersion: 'apps' })` selects them for a Wire
+deployment that predates the agent paths. Failures throw `WireAgentApiError`,
+a `WireSdkError` with Wire's `code`, the HTTP `status`, and `retryable`:
 
 | `code` | `status` | Meaning |
 |---|---|---|
 | `UNAUTHORIZED`, `INVALID_TOKEN`, `TOKEN_EXPIRED`, `REPLAY_DETECTED`, `CREDENTIAL_REVOKED`, `RUNTIME_KEY_REQUIRED`, `UNKNOWN_AGENT` | 401 | The key or token was refused (a publish key, a revoked key, a clock more than a minute off) |
-| `AGENT_DISABLED` | 403 | Your app is disabled |
-| `NOT_FOUND` | 404 | `revokeInstall` of an install your app does not have, or whose container is gone |
+| `AGENT_DISABLED` | 403 | Your agent is disabled |
+| `NOT_FOUND` | 404 | `revokeInstall` of an install your agent does not have, or whose container is gone |
 | `CONTAINER_UNAVAILABLE` | 502 | `revokeInstall`: the connections ended but the container could not finish the uninstall yet. `retryable`: call it again |
 | `UNAVAILABLE` | 503 | Wire could not answer. `retryable` |
 | `NETWORK_ERROR`, `HTTP_<status>` | | No answer, or not Wire's. `retryable` for network errors, 429, 502, 503 and 504 |
@@ -615,7 +626,7 @@ empty body). Failures throw `WireAppApiError`, a `WireSdkError` with Wire's
 
 Wire can POST a signed event to your server whenever one of your installs
 changes, so your records stay right between visits. Register the URL and the
-events on your app record (same permission as adding a key):
+events on your agent record (same permission as adding a key):
 
 ```bash
 curl -X PATCH https://app.usewire.io/api/v1/agents/someday \
@@ -630,38 +641,40 @@ address, not a Wire domain. `"webhooks": null` stops them.
 |---|---|
 | `install.created` | A connect made the install active: the first connect, or a reconnect after it was revoked |
 | `install.upgraded` | A connect of an active install applied a newer version of your manifest |
-| `install.disconnected` | The install's last live connection ended (the user disconnected, or you rotated your app's credentials) |
-| `install.uninstalled` | Your app was uninstalled from the container, by its owner or by your `revokeInstall` |
-| `install.claimed` | The install's trial container was claimed; `install.appUserId` is now set |
+| `install.disconnected` | The install's last live connection ended (the user disconnected, or you rotated your agent's credentials) |
+| `install.uninstalled` | Your agent was uninstalled from the container, by its owner or by your `revokeInstall` |
+| `install.claimed` | The install's trial container was claimed; `install.agentUserId` is now set |
 | `install.expiring` | About a day before a trial container expires, once |
 | `install.expired` | A trial container expired and is being deleted |
 | `install.container_deleted` | The container was permanently deleted |
 
 The body is `{ id, type, createdAt, install }`, where `install` is the same
-`WireInstall` the app API returns, as it was when the event happened.
+`WireInstall` the agent API returns, as it was when the event happened. While
+older SDKs are still in use, Wire sends the pairwise id as both `agentUserId`
+and the deprecated `appUserId`; the SDK reads either.
 
 `defineWebhook` returns a complete endpoint. It verifies the request, answers
 `200` once your handler returns, and dispatches by event type:
 
 ```typescript
 // worker.ts
-import { defineWebhook } from '@usewire/sdk/app';
+import { defineWebhook } from '@usewire/sdk/agent';
 
 const webhook = defineWebhook(
   {
     'install.created': async (event) => {
-      await db.upsertInstall(event.install.installId, event.install.appUserId, event.install.container.name);
+      await db.upsertInstall(event.install.installId, event.install.agentUserId, event.install.container.name);
     },
     'install.uninstalled': async (event) => {
       await db.markRemoved(event.install.installId);
     },
     'install.claimed': async (event) => {
-      await db.setAppUserId(event.install.installId, event.install.appUserId);
+      await db.setAgentUserId(event.install.installId, event.install.agentUserId);
     },
     default: (event) => console.log('unhandled', event.type, event.id),
   },
   {
-    appId: 'someday',
+    agentId: 'someday',
     // url: 'https://someday.example/webhooks/wire', // behind a proxy: the registered URL
     replayStore, // durable and shared in production: see below
   }
@@ -724,11 +737,11 @@ To verify inside a server you already have, call the check on its own. It takes
 a Fetch `Request` or the raw parts:
 
 ```typescript
-import { verifyWireWebhook, WireWebhookError } from '@usewire/sdk/app';
+import { verifyWireWebhook, WireWebhookError } from '@usewire/sdk/agent';
 
 try {
-  const { event, release } = await verifyWireWebhook(request, { appId: 'someday', replayStore });
-  // or: verifyWireWebhook({ headers: req.headers, rawBody, url: req.url }, { appId, origin: 'https://someday.example' })
+  const { event, release } = await verifyWireWebhook(request, { agentId: 'someday', replayStore });
+  // or: verifyWireWebhook({ headers: req.headers, rawBody, url: req.url }, { agentId, origin: 'https://someday.example' })
   try {
     await handle(event);
   } catch {
@@ -749,7 +762,7 @@ What the verifier checks, for anyone verifying without the SDK:
    `typ: "wire-webhook+jwt"` (an action token is not a webhook) and a `kid`,
    signed by a key in the same JWKS as action calls,
    `https://app.usewire.io/.well-known/wire-actions-jwks.json`.
-2. `iss` is `"wire"`, `aud` is your app id (the agent id), `exp - iat <= 60`
+2. `iss` is `"wire"`, `aud` is your agent id, `exp - iat <= 60`
    and not expired (30 s of skew).
 3. `wire_url` is your registered webhook URL (normalized as for actions).
 4. `wire_body_sha256` is the base64url SHA-256 of the raw body, checked before
@@ -761,22 +774,22 @@ What the verifier checks, for anyone verifying without the SDK:
 
 A trial is a connect by someone with no Wire account: an ephemeral container
 that lasts 7 days, with the same tools and endpoint. Its install has an
-`installId` right away and `appUserId: null`, and reads
+`installId` right away and `agentUserId: null`, and reads
 `container.isEphemeral: true`, `container.ephemeralExpiresAt` and
 `claimed: false`.
 
 While the trial is active, the install also carries `claimUrl`, where the
 person creates an account and keeps the container. It is not a credential and
 works until the trial expires, so it can go in an email; it stops working if
-your app is disconnected or uninstalled first. Since a trial has no
-`appUserId`, keep its `installId` (for example in the user's session or your
+your agent is disconnected or uninstalled first. Since a trial has no
+`agentUserId`, keep its `installId` (for example in the user's session or your
 own record of them) to look it up.
 
-A trial app usually subscribes to two events:
+An agent offering trials usually subscribes to two events:
 
 - **`install.expiring`**, about a day before the container goes: remind the
   person, with `event.install.claimUrl`.
-- **`install.claimed`**, when they keep it: `event.install.appUserId` is now
+- **`install.claimed`**, when they keep it: `event.install.agentUserId` is now
   set. Store it on your user, as after a normal connect.
 
 If they do not claim it, `install.expired` follows, and the container and its
@@ -787,18 +800,65 @@ data are deleted. After `install.expired` and `install.container_deleted`,
 
 Node 18+, Cloudflare Workers, Deno, Bun. `connect()` needs to drive the
 user's browser; browser-only environments work for `getStatus`, `claim`, and
-`disconnect`. `@usewire/sdk/app` runs anywhere with `fetch` and Web Crypto,
+`disconnect`. `@usewire/sdk/agent` runs anywhere with `fetch` and Web Crypto,
 and imports nothing Node-specific.
 
 ## Errors
 
 Rejected promises throw `WireSdkError` with a `code` and HTTP `status` when
-applicable. On `@usewire/sdk/app`, a failed verification throws
-`WireActionAuthError` (`code`, and `status`: 401, 413, or 503 when your app
+applicable. On `@usewire/sdk/agent`, a failed verification throws
+`WireActionAuthError` (`code`, and `status`: 401, 413, or 503 when your agent
 could not check), and `defineManifest` throws `WireManifestError` with
-`issues`. `WireAppClient` throws `WireAppApiError` (a `WireSdkError` with
+`issues`. `WireAgentClient` throws `WireAgentApiError` (a `WireSdkError` with
 `retryable`), and `verifyWireWebhook` throws `WireWebhookError`, whose `status`
 is what to answer with (200 for `DUPLICATE_EVENT`).
+
+### Agent-managed containers
+
+Installing an agent's manifest on a container hands the container's tools and
+analysis to the manifest until the agent is uninstalled. Changing what the
+manifest owns (a tool's visibility, a custom tool, an API key's own tool list,
+the analysis switches) is refused with HTTP 409 and the code
+`container_agent_managed`, naming the agent in `managedBy`. Wire used the code
+`container_app_managed` and `managedBy.appId` before 0.10; these helpers accept
+both:
+
+```typescript
+import { isAgentManagedError, managedByFromError } from '@usewire/sdk';
+
+try {
+  await doSomething();
+} catch (err) {
+  if (isAgentManagedError(err)) {
+    const by = managedByFromError(err); // { agentId, name, version, status, installer } | null
+    console.log(`Tools are set by ${by?.name ?? 'an agent'}`);
+  }
+}
+```
+
+## Migrating to 0.10
+
+0.10.0 finishes the move from "app" to "agent": an SDK-built agent may bring a
+manifest, and installing it on a container is an install. Every old name keeps
+working and is marked deprecated, so nothing breaks on upgrade.
+
+| 0.9.x (deprecated, still works) | 0.10.0 |
+|---|---|
+| `@usewire/sdk/app` | `@usewire/sdk/agent` (the same module) |
+| `WireAppClient`, `WireAppClientOptions` | `WireAgentClient`, `WireAgentClientOptions` |
+| `new WireAppClient({ appId })` | `new WireAgentClient({ agentId })` |
+| `client.appId` | `client.agentId` |
+| `listInstalls(appUserId)` | `listInstalls(agentUserId)` |
+| `WireAppApiError` | `WireAgentApiError` |
+| `APP_API_AUDIENCE` (`wire-app-api`) | `AGENT_API_AUDIENCE` (`wire-agent-api`) |
+| `APP_API_TOKEN_LIFETIME_SEC`, `APP_API_BODY_HASH_CLAIM` | `AGENT_API_TOKEN_LIFETIME_SEC`, `AGENT_API_BODY_HASH_CLAIM` |
+| `install.appUserId`, `connection.appUserId` | `install.agentUserId`, `connection.agentUserId` |
+| reason `app_disconnected` | reason `agent_disconnected` (an older server's value is mapped) |
+| `verifyWireAction` / `defineAction` / `verifyWireWebhook` / `defineWebhook` `{ appId }` | `{ agentId }` |
+
+The client now calls `/api/v1/agents/{agentId}/...` with
+`aud: "wire-agent-api"`. Pass `apiVersion: 'apps'` for a Wire deployment that
+has not shipped the agent paths yet.
 
 ## Migrating from 0.1.x
 

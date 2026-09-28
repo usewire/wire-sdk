@@ -51,7 +51,7 @@ afterEach(() => {
 
 function opts(extra: Partial<VerifyWireWebhookOptions> = {}): VerifyWireWebhookOptions {
   return {
-    appId: 'someday',
+    agentId: 'someday',
     jwksUrl: uniqueUrl(server),
     now: NOW,
     replayStore: new MemoryReplayStore(),
@@ -97,7 +97,7 @@ describe('verifyWireWebhook: accepted', () => {
     const body = webhookBody({
       type: 'install.expiring',
       install: installJson({
-        appUserId: null,
+        agentUserId: null,
         claimed: false,
         claimUrl: 'https://app.usewire.io/onboarding/create-account?claimToken=t',
         container: {
@@ -111,6 +111,7 @@ describe('verifyWireWebhook: accepted', () => {
       }),
     });
     const v = await verifyWireWebhook(webhookRequest(await signed(body), body, { type: 'install.expiring' }), opts());
+    expect(v.event.install.agentUserId).toBeNull();
     expect(v.event.install.appUserId).toBeNull();
     expect(v.event.install.claimed).toBe(false);
     expect(v.event.install.claimUrl).toContain('claimToken=');
@@ -153,13 +154,48 @@ describe('verifyWireWebhook: accepted', () => {
     expect(c.event.id).toBe(EVENT_ID);
   });
 
-  it('the manifest form of the app id names the same app', async () => {
+  it('the manifest form of the agent id names the same agent', async () => {
     const body = webhookBody();
     const v = await verifyWireWebhook(
       webhookRequest(await signed(body, { audience: 'geo-app' }), body),
-      opts({ appId: 'geo_app' })
+      opts({ agentId: 'geo_app' })
     );
     expect(v.claims.aud).toBe('geo-app');
+  });
+
+  it('the deprecated appId option still names the agent', async () => {
+    const body = webhookBody();
+    const v = await verifyWireWebhook(webhookRequest(await signed(body), body), opts({ agentId: undefined, appId: 'someday' }));
+    expect(v.claims.aud).toBe('someday');
+  });
+
+  it('reads an install with both user id fields (the payload during the rename) as agentUserId', async () => {
+    const body = webhookBody({ install: installJson({ agentUserId: 'au_new', appUserId: 'au_new' }) });
+    const v = await verifyWireWebhook(webhookRequest(await signed(body), body), opts());
+    expect(v.event.install.agentUserId).toBe('au_new');
+    expect(v.event.install.appUserId).toBe('au_new');
+  });
+
+  it('reads a pre-rename install: appUserId only, reason app_disconnected', async () => {
+    const legacy = installJson({
+      appUserId: 'au_old',
+      connection: { status: 'revoked', reason: 'app_disconnected', connectedAt: '2026-09-01T00:00:00.000Z', lastUsedAt: null },
+    });
+    delete legacy.agentUserId;
+    const body = webhookBody({ type: 'install.disconnected', install: legacy });
+    const v = await verifyWireWebhook(webhookRequest(await signed(body), body, { type: 'install.disconnected' }), opts());
+    expect(v.event.install.agentUserId).toBe('au_old');
+    expect(v.event.install.appUserId).toBe('au_old');
+    expect(v.event.install.connection.reason).toBe('agent_disconnected');
+  });
+
+  it('agent_disconnected passes through as is', async () => {
+    const body = webhookBody({
+      type: 'install.disconnected',
+      install: installJson({ connection: { status: 'revoked', reason: 'agent_disconnected', connectedAt: '2026-09-01T00:00:00.000Z', lastUsedAt: null } }),
+    });
+    const v = await verifyWireWebhook(webhookRequest(await signed(body), body, { type: 'install.disconnected' }), opts());
+    expect(v.event.install.connection.reason).toBe('agent_disconnected');
   });
 
   it('finds the JWKS from baseUrl', async () => {
@@ -318,12 +354,12 @@ describe('verifyWireWebhook: replay and dedupe', () => {
     await expectCode(verifyWireWebhook(webhookRequest(token, body), o), 'REPLAYED');
   });
 
-  it('keys are per app: another app receiving the same event id is not a duplicate', async () => {
+  it('keys are per agent: another agent receiving the same event id is not a duplicate', async () => {
     const store = new MemoryReplayStore();
     await verifyWireWebhook(webhookRequest(await signed(body), body), opts({ replayStore: store }));
     const v = await verifyWireWebhook(
       webhookRequest(await signed(body, { audience: 'other-app' }), body),
-      opts({ replayStore: store, appId: 'other-app' })
+      opts({ replayStore: store, agentId: 'other-app' })
     );
     expect(v.event.id).toBe(EVENT_ID);
   });
@@ -360,9 +396,9 @@ describe('verifyWireWebhook: replay and dedupe', () => {
 });
 
 describe('verifyWireWebhook: options', () => {
-  it('refuses a missing appId, and a request URL it cannot bind', async () => {
+  it('refuses a missing agentId, and a request URL it cannot bind', async () => {
     const body = webhookBody();
-    await expect(verifyWireWebhook(webhookRequest(await signed(body), body), { ...opts(), appId: '' })).rejects.toThrow(TypeError);
+    await expect(verifyWireWebhook(webhookRequest(await signed(body), body), { ...opts(), agentId: '' })).rejects.toThrow(/agentId/);
     await expect(
       verifyWireWebhook({ headers: {}, rawBody: body, url: '/hooks/wire' }, opts())
     ).rejects.toThrow(/pass url or origin/);
@@ -373,7 +409,7 @@ describe('verifyWireWebhook: options', () => {
 
 function defOpts(extra: Partial<DefineWebhookOptions> = {}): DefineWebhookOptions {
   return {
-    appId: 'someday',
+    agentId: 'someday',
     jwksUrl: uniqueUrl(server),
     now: () => NOW,
     replayStore: new MemoryReplayStore(),
@@ -521,7 +557,8 @@ describe('defineWebhook', () => {
   });
 
   it('refuses a bad definition up front', () => {
-    expect(() => defineWebhook(vi.fn(), { ...defOpts(), appId: '' })).toThrow(/appId/);
+    expect(() => defineWebhook(vi.fn(), { ...defOpts(), agentId: '' })).toThrow(/agentId/);
+    expect(() => defineWebhook(vi.fn(), { ...defOpts(), agentId: undefined, appId: 'someday' })).not.toThrow();
     expect(() => defineWebhook({ 'install.nope': vi.fn() } as never, defOpts())).toThrow(/not a Wire webhook event type/);
     expect(() => defineWebhook(vi.fn(), defOpts({ url: '/relative' }))).toThrow(/url/);
     expect(() => defineWebhook(vi.fn(), defOpts({ jwksUrl: 'http://example.com/jwks' }))).toThrow(/https/);

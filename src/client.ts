@@ -100,9 +100,14 @@ interface PollReadyData {
   api_key: string;
   is_ephemeral: boolean;
   created_at: string | null;
-  app_id: string;
+  /** Since the agent rename; `app_id` from an older server. */
+  agent_id?: string;
+  /** @deprecated server field, read when `agent_id` is absent. */
+  app_id?: string;
   credential_id: string;
   install_id?: string | null;
+  agent_user_id?: string | null;
+  /** @deprecated server field, read when `agent_user_id` is absent. */
   app_user_id?: string | null;
 }
 interface PollPending {
@@ -129,13 +134,19 @@ interface StatusResponseData {
     last_used_at: string | null;
     label: string | null;
     install_id?: string | null;
+    agent_user_id?: string | null;
+    /** @deprecated server field, read when `agent_user_id` is absent. */
     app_user_id?: string | null;
   };
-  app: { id: string; name: string; verified: boolean };
+  agent?: { id: string; name: string; verified: boolean };
+  /** @deprecated server field, read when `agent` is absent. */
+  app?: { id: string; name: string; verified: boolean };
 }
 
 interface ManifestRegistrationData {
   app_id: string;
+  /** Since the agent rename; derived from `app_id` for an older server. */
+  agent_id?: string;
   version: string;
   hash: string;
   status: 'created' | 'updated' | 'unchanged';
@@ -457,9 +468,11 @@ export class WireClient {
         api_key: string;
         is_ephemeral: boolean;
         created_at: string | null;
-        app_id: string;
+        agent_id?: string;
+        app_id?: string;
         credential_id: string;
         install_id?: string | null;
+        agent_user_id?: string | null;
         app_user_id?: string | null;
       };
     };
@@ -506,9 +519,10 @@ export class WireClient {
           : null,
         label: data.connection.label,
         installId: data.connection.install_id ?? null,
-        appUserId: data.connection.app_user_id ?? null,
+        agentUserId: pick(data.connection.agent_user_id, data.connection.app_user_id),
+        appUserId: pick(data.connection.agent_user_id, data.connection.app_user_id),
       },
-      agent: data.app,
+      agent: data.agent ?? data.app ?? { id: '', name: 'unknown', verified: false },
     };
   }
 
@@ -600,14 +614,14 @@ export class WireClient {
   }
 
   /**
-   * Register (or update) this agent's Connect app manifest with Wire.
+   * Register (or update) this agent's manifest with Wire.
    *
    * Signed with an Ed25519 JWT (aud 'wire-manifest', plus a `body_sha256`
    * claim binding the exact request body) by one of the agent's PUBLISHER
    * keys: pass it as `deviceKey`, with its `pk_…` id as `credentialId`. An
    * install's device key is refused, since anyone can bootstrap one for any
    * agent id. `manifest.app.id` must equal this client's `agentId` with `-`
-   * changed to `_` (app ids are tool-name prefixes).
+   * changed to `_` (the manifest form, used as a tool-name prefix).
    *
    * Validation happens on Wire. Errors throw WireSdkError:
    *   - 422 INVALID_MANIFEST, `details.errors` naming each offending path;
@@ -653,6 +667,7 @@ export class WireClient {
     });
     const data = await unwrap<ManifestRegistrationData>(res);
     return {
+      agentId: data.agent_id ?? data.app_id.replace(/_/g, '-'),
       appId: data.app_id,
       version: data.version,
       hash: data.hash,
@@ -683,10 +698,13 @@ function connectionFromWireData(
     api_key: string;
     is_ephemeral: boolean;
     created_at: string | null;
-    app_id: string;
+    /** Since the agent rename; `app_id` from an older server. */
+    agent_id?: string;
+    app_id?: string;
     credential_id: string;
     /** SUP-958; absent from older servers. */
     install_id?: string | null;
+    agent_user_id?: string | null;
     app_user_id?: string | null;
   },
   extras: { deviceKey?: DeviceKey; label?: string }
@@ -702,14 +720,20 @@ function connectionFromWireData(
       data.is_ephemeral && data.created_at
         ? new Date(new Date(data.created_at).getTime() + 7 * 24 * 60 * 60 * 1000)
         : null,
-    agentId: data.app_id,
+    agentId: data.agent_id ?? data.app_id ?? '',
     credentialId: data.credential_id,
     deviceKey: extras.deviceKey,
     connectedAt: new Date(),
     label: extras.label,
     installId: data.install_id ?? null,
-    appUserId: data.app_user_id ?? null,
+    agentUserId: pick(data.agent_user_id, data.app_user_id),
+    appUserId: pick(data.agent_user_id, data.app_user_id),
   };
+}
+
+/** The current field when the server sent it, else the pre-rename one; null when neither. */
+function pick(current: string | null | undefined, legacy: string | null | undefined): string | null {
+  return current !== undefined ? current : (legacy ?? null);
 }
 
 function requireBrowser(method: string): void {

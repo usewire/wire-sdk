@@ -57,18 +57,20 @@ export interface Connection {
   label?: string;
 
   /**
-   * The install's stable id (`ins_…`): one per app, user and container, kept
-   * across reconnects. Not a credential: store it and read the install later
-   * from your server with WireAppClient (`@usewire/sdk/app`). Null from a
-   * Wire server older than SUP-958.
+   * The install's stable id (`ins_…`): one per agent, user and container,
+   * kept across reconnects. Not a credential: store it and read the install
+   * later from your server with WireAgentClient (`@usewire/sdk/agent`). Null
+   * from a Wire server older than SUP-958.
    */
   installId: string | null;
   /**
-   * The user's id for your app (`au_…`), pairwise: another app gets a
+   * The user's id for your agent (`au_…`), pairwise: another agent gets a
    * different id for the same person, and it never reveals their Wire
    * account. Not a credential. Null while the user is on an unclaimed trial
    * (set when they claim it), or from a server older than SUP-958.
    */
+  agentUserId: string | null;
+  /** @deprecated Use `agentUserId` (the same value). */
   appUserId: string | null;
 }
 
@@ -177,7 +179,9 @@ export interface StatusSnapshot {
     label: string | null;
     /** The install's stable id (see Connection.installId). Null from an older server. */
     installId: string | null;
-    /** The user's pairwise id for this app (see Connection.appUserId). Null on an unclaimed trial. */
+    /** The user's pairwise id for this agent (see Connection.agentUserId). Null on an unclaimed trial. */
+    agentUserId: string | null;
+    /** @deprecated Use `agentUserId` (the same value). */
     appUserId: string | null;
   };
   agent: {
@@ -189,7 +193,9 @@ export interface StatusSnapshot {
 
 /** Result of WireClient.registerManifest(). */
 export interface ManifestRegistration {
-  /** The manifest's `app.id` (your agent id). */
+  /** Your agent id (`geo-app`). */
+  agentId: string;
+  /** The manifest's `app.id`: the agent id with `-` as `_` (`geo_app`). */
   appId: string;
   /** The manifest's `app.version`, as Wire recorded it. */
   version: string;
@@ -199,7 +205,7 @@ export interface ManifestRegistration {
   status: 'created' | 'updated' | 'unchanged';
   /** Custom tools the manifest installs. */
   tools: string[];
-  /** Base tools kept visible to the app's grant. */
+  /** Base tools kept visible to the agent's grant. */
   baseTools: string[];
   /** Each action and the host Wire will call. */
   actions: { name: string; host: string }[];

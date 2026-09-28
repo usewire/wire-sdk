@@ -1,27 +1,33 @@
 /**
- * WireAppClient (SUP-958). Every request is checked by `wireAppApi` below,
- * which restates wire-platform `apps/server/src/lib/app-api-auth.ts`
- * (requireAppRuntimeJwt) check for check: the runtime key looked up by kid,
- * `jwtVerify` with `aud: wire-app-api`, `iss` the key's app, a jti of 8+
- * characters used once, a lifetime of 1..60 s, `iat` not in the future, and on
- * DELETE `body_sha256` of the exact body. So a token this client mints is one
- * the platform accepts, and the other way round.
+ * WireAgentClient (SUP-958). Every request is checked by `wireAgentApi` below,
+ * which restates the platform's agent API door check for check: the runtime
+ * key looked up by kid, `jwtVerify` with `aud` one of `wire-agent-api` /
+ * `wire-app-api` (the platform accepts both during the rename), `iss` the
+ * key's agent, a jti of 8+ characters used once, a lifetime of 1..60 s, `iat`
+ * not in the future, and on DELETE `body_sha256` of the exact body. The door
+ * answers both `/api/v1/agents/...` and the deprecated `/api/v1/apps/...`.
+ * So a token this client mints is one the platform accepts, and the other way
+ * round.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { decodeJwt, decodeProtectedHeader, errors as joseErrors, importJWK, jwtVerify } from 'jose';
 import { WireSdkError } from '../types.js';
 import {
+  AGENT_API_AUDIENCE,
   APP_API_AUDIENCE,
   generateRuntimeKey,
+  WireAgentApiError,
+  WireAgentClient,
   WireAppApiError,
   WireAppClient,
-  type WireAppClientOptions,
+  type WireAgentClientOptions,
 } from '../app/index.js';
+import * as agentEntry from '../agent/index.js';
 import { installJson } from './helpers/wire-signer.js';
 
 const EMPTY_BODY_SHA256 = '47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU';
 const INSTALL = 'ins_aaaaaaaaaaaaaaaaaaaaaaaa';
-const APP_USER = 'au_bbbbbbbbbbbbbbbbbbbbbbbb';
+const AGENT_USER = 'au_bbbbbbbbbbbbbbbbbbbbbbbb';
 
 interface RegisteredKey {
   agentId: string;
@@ -39,8 +45,8 @@ async function sha(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
 
 type Answer = { status: number; body: unknown };
 
-/** The platform's app API door: auth exactly as app-api-auth.ts, then `route` answers. */
-function wireAppApi(keys: Map<string, RegisteredKey>, route: (method: string, path: string) => Answer) {
+/** The platform's agent API door: auth exactly as the platform's, then `route` answers. */
+function wireAgentApi(keys: Map<string, RegisteredKey>, route: (method: string, path: string) => Answer) {
   const seen = new Set<string>();
   const requests: Request[] = [];
   const fail = (status: number, code: string, message: string): Response =>
@@ -68,13 +74,13 @@ function wireAppApi(keys: Map<string, RegisteredKey>, route: (method: string, pa
     let payload: Record<string, unknown>;
     try {
       const jwk = await importJWK({ kty: 'OKP', crv: 'Ed25519', x: key.publicKey }, 'EdDSA');
-      payload = (await jwtVerify(token, jwk, { audience: 'wire-app-api', algorithms: ['EdDSA'] })).payload as Record<string, unknown>;
+      payload = (await jwtVerify(token, jwk, { audience: ['wire-agent-api', 'wire-app-api'], algorithms: ['EdDSA'] })).payload as Record<string, unknown>;
     } catch (err) {
       if (err instanceof joseErrors.JWTExpired) return fail(401, 'TOKEN_EXPIRED', 'JWT expired');
       if (err instanceof joseErrors.JWTClaimValidationFailed) return fail(401, 'INVALID_TOKEN', `JWT claim invalid: ${err.claim}`);
       return fail(401, 'INVALID_TOKEN', 'JWT signature verification failed');
     }
-    if (payload.iss !== key.agentId) return fail(401, 'INVALID_TOKEN', 'iss must be the app the key belongs to');
+    if (payload.iss !== key.agentId) return fail(401, 'INVALID_TOKEN', 'iss must be the agent the key belongs to');
     if (typeof payload.jti !== 'string' || payload.jti.length < 8) return fail(401, 'INVALID_TOKEN', 'Missing or short jti');
     if (typeof payload.iat !== 'number' || typeof payload.exp !== 'number') return fail(401, 'INVALID_TOKEN', 'Missing iat or exp');
     if (payload.exp <= payload.iat || payload.exp - payload.iat > 60) return fail(401, 'INVALID_TOKEN', 'JWT lifetime must be 1..60s');
@@ -88,10 +94,10 @@ function wireAppApi(keys: Map<string, RegisteredKey>, route: (method: string, pa
     seen.add(replayKey);
 
     const url = new URL(req.url);
-    const m = /^\/api\/v1\/apps\/([^/]+)(\/.*)$/.exec(url.pathname);
-    // routes/apps.ts: a path naming another app is 404.
-    if (!m || m[1].replace(/_/g, '-') !== key.agentId) return fail(404, 'NOT_FOUND', 'Install not found');
-    const a = route(req.method, m[2]);
+    const m = /^\/api\/v1\/(agents|apps)\/([^/]+)(\/.*)$/.exec(url.pathname);
+    // A path naming another agent is 404.
+    if (!m || m[2].replace(/_/g, '-') !== key.agentId) return fail(404, 'NOT_FOUND', 'Install not found');
+    const a = route(req.method, m[3]);
     return new Response(typeof a.body === 'string' ? a.body : JSON.stringify(a.body), { status: a.status });
   });
   return { fetch: fetchImpl as unknown as typeof fetch, requests, mock: fetchImpl };
@@ -113,9 +119,9 @@ beforeEach(async () => {
   ]);
 });
 
-function client(api: ReturnType<typeof wireAppApi>, extra: Partial<WireAppClientOptions> = {}) {
-  return new WireAppClient({
-    appId: 'someday',
+function client(api: ReturnType<typeof wireAgentApi>, extra: Partial<WireAgentClientOptions> = {}) {
+  return new WireAgentClient({
+    agentId: 'someday',
     runtimeKey: { privateJwk: runtime.privateJwk, keyId: 'pk_runtime' },
     baseUrl: 'https://preview.app.usewire.io',
     fetch: api.fetch,
@@ -123,9 +129,9 @@ function client(api: ReturnType<typeof wireAppApi>, extra: Partial<WireAppClient
   });
 }
 
-describe('WireAppClient: signing', () => {
+describe('WireAgentClient: signing', () => {
   it("each call signs a fresh token the platform's door accepts", async () => {
-    const api = wireAppApi(keys, () => ok(installJson()));
+    const api = wireAgentApi(keys, () => ok(installJson()));
     const c = client(api);
     await c.getInstall(INSTALL);
     await c.getInstall(INSTALL);
@@ -134,18 +140,19 @@ describe('WireAppClient: signing', () => {
     const [h, p] = [decodeProtectedHeader(tokens[0]), decodeJwt(tokens[0])];
     expect(h).toEqual({ alg: 'EdDSA', kid: 'pk_runtime' });
     expect(p.iss).toBe('someday');
-    expect(p.aud).toBe(APP_API_AUDIENCE);
+    expect(p.aud).toBe(AGENT_API_AUDIENCE);
+    expect(p.aud).toBe('wire-agent-api');
     expect(p.exp! - p.iat!).toBe(60);
     expect(Math.abs(p.iat! - Date.now() / 1000)).toBeLessThan(5);
     expect(typeof p.jti === 'string' && p.jti.length >= 8).toBe(true);
     expect(p.body_sha256).toBeUndefined();
     expect(decodeJwt(tokens[1]).jti).not.toBe(p.jti);
-    expect(api.requests[0].url).toBe(`https://preview.app.usewire.io/api/v1/apps/someday/installs/${INSTALL}`);
+    expect(api.requests[0].url).toBe(`https://preview.app.usewire.io/api/v1/agents/someday/installs/${INSTALL}`);
     expect(api.requests[0].method).toBe('GET');
   });
 
   it('DELETE carries body_sha256 of the empty body, and sends no body', async () => {
-    const api = wireAppApi(keys, () => ok(installJson()));
+    const api = wireAgentApi(keys, () => ok(installJson()));
     await client(api).revokeInstall(INSTALL);
     const req = api.requests[0];
     expect(req.method).toBe('DELETE');
@@ -153,50 +160,51 @@ describe('WireAppClient: signing', () => {
     expect(await req.text()).toBe('');
   });
 
-  it('the manifest form of the app id signs and routes as the agent id', async () => {
+  it('the manifest form of the agent id signs and routes as the agent id', async () => {
     keys.set('pk_geo', { agentId: 'geo-app', publicKey: runtime.publicKey, purpose: 'runtime' });
-    const api = wireAppApi(keys, () => ok(installJson()));
-    const c = client(api, { appId: 'geo_app', runtimeKey: { privateJwk: runtime.privateJwk, keyId: 'pk_geo' } });
-    expect(c.appId).toBe('geo-app');
+    const api = wireAgentApi(keys, () => ok(installJson()));
+    const c = client(api, { agentId: 'geo_app', runtimeKey: { privateJwk: runtime.privateJwk, keyId: 'pk_geo' } });
+    expect(c.agentId).toBe('geo-app');
     await c.getInstall(INSTALL);
     expect(decodeJwt(api.requests[0].headers.get('authorization')!.slice(7)).iss).toBe('geo-app');
-    expect(new URL(api.requests[0].url).pathname).toBe(`/api/v1/apps/geo-app/installs/${INSTALL}`);
+    expect(new URL(api.requests[0].url).pathname).toBe(`/api/v1/agents/geo-app/installs/${INSTALL}`);
   });
 
   it('accepts the private JWK as a JSON string (an env secret)', async () => {
-    const api = wireAppApi(keys, () => ok(installJson()));
+    const api = wireAgentApi(keys, () => ok(installJson()));
     const c = client(api, { runtimeKey: { privateJwk: JSON.stringify(runtime.privateJwk), keyId: 'pk_runtime' } });
     expect((await c.getInstall(INSTALL))?.installId).toBe(INSTALL);
   });
 
   it('a publish key is refused by the door (the client surfaces it as INVALID_TOKEN)', async () => {
-    const api = wireAppApi(keys, () => ok(installJson()));
+    const api = wireAgentApi(keys, () => ok(installJson()));
     const c = client(api, { runtimeKey: { privateJwk: publish.privateJwk, keyId: 'pk_publish' } });
     const e = await c.getInstall(INSTALL).catch((x: unknown) => x);
-    expect(e).toBeInstanceOf(WireAppApiError);
-    expect((e as WireAppApiError).code).toBe('INVALID_TOKEN');
-    expect((e as WireAppApiError).status).toBe(401);
-    expect((e as WireAppApiError).retryable).toBe(false);
+    expect(e).toBeInstanceOf(WireAgentApiError);
+    expect((e as WireAgentApiError).code).toBe('INVALID_TOKEN');
+    expect((e as WireAgentApiError).status).toBe(401);
+    expect((e as WireAgentApiError).retryable).toBe(false);
   });
 
   it('refuses a bad configuration up front', () => {
-    const base = { appId: 'someday', runtimeKey: { privateJwk: runtime.privateJwk, keyId: 'pk_runtime' } };
-    expect(() => new WireAppClient({ ...base, appId: '' })).toThrow(/appId/);
-    expect(() => new WireAppClient({ ...base, appId: '../x' })).toThrow(/app id/);
-    expect(() => new WireAppClient({ ...base, runtimeKey: { privateJwk: runtime.privateJwk, keyId: '' } })).toThrow(/keyId/);
-    expect(() => new WireAppClient({ ...base, runtimeKey: { privateJwk: 'not json', keyId: 'k' } })).toThrow(/JWK/);
+    const base = { agentId: 'someday', runtimeKey: { privateJwk: runtime.privateJwk, keyId: 'pk_runtime' } };
+    expect(() => new WireAgentClient({ ...base, agentId: '' })).toThrow(/agentId/);
+    expect(() => new WireAgentClient({ ...base, agentId: '../x' })).toThrow(/agent id/);
+    expect(() => new WireAgentClient({ ...base, apiVersion: 'v2' as never })).toThrow(/apiVersion/);
+    expect(() => new WireAgentClient({ ...base, runtimeKey: { privateJwk: runtime.privateJwk, keyId: '' } })).toThrow(/keyId/);
+    expect(() => new WireAgentClient({ ...base, runtimeKey: { privateJwk: 'not json', keyId: 'k' } })).toThrow(/JWK/);
     const { d: _d, ...publicOnly } = runtime.privateJwk;
-    expect(() => new WireAppClient({ ...base, runtimeKey: { privateJwk: publicOnly, keyId: 'k' } })).toThrow(/private JWK/);
+    expect(() => new WireAgentClient({ ...base, runtimeKey: { privateJwk: publicOnly, keyId: 'k' } })).toThrow(/private JWK/);
   });
 });
 
-describe('WireAppClient: reads', () => {
+describe('WireAgentClient: reads', () => {
   it('getInstall returns the typed install', async () => {
-    const api = wireAppApi(keys, () =>
+    const api = wireAgentApi(keys, () =>
       ok(
         installJson({
           claimed: false,
-          appUserId: null,
+          agentUserId: null,
           claimUrl: 'https://app.usewire.io/onboarding/create-account?claimToken=t',
           container: { id: 'c1', name: 'Places', mcpEndpoint: 'https://x.mcp.usewire.io/container/c1/mcp', orgSlug: 'x', isEphemeral: true, ephemeralExpiresAt: '2026-10-04T00:00:00.000Z' },
           connection: { status: 'active', connectedAt: '2026-09-27T18:04:28.000Z', lastUsedAt: '2026-09-27T19:12:03.000Z' },
@@ -205,6 +213,7 @@ describe('WireAppClient: reads', () => {
     );
     const i = (await client(api).getInstall(INSTALL))!;
     expect(i.installId).toBe(INSTALL);
+    expect(i.agentUserId).toBeNull();
     expect(i.appUserId).toBeNull();
     expect(i.claimed).toBe(false);
     expect(i.claimUrl).toContain('claimToken=');
@@ -221,11 +230,11 @@ describe('WireAppClient: reads', () => {
       connectedAt: new Date('2026-09-27T18:04:28.000Z'),
       lastUsedAt: new Date('2026-09-27T19:12:03.000Z'),
     });
-    expect(i.manageUrl).toContain('#installed-apps');
+    expect(i.manageUrl).toContain('#installed-agents');
   });
 
   it('a revoked install reads as revoked, with its reason', async () => {
-    const api = wireAppApi(keys, () =>
+    const api = wireAgentApi(keys, () =>
       ok(installJson({ connection: { status: 'revoked', reason: 'user_disconnected', connectedAt: '2026-09-01T00:00:00.000Z', lastUsedAt: null } }))
     );
     const i = (await client(api).getInstall(INSTALL))!;
@@ -233,32 +242,32 @@ describe('WireAppClient: reads', () => {
     expect(i.connection.reason).toBe('user_disconnected');
   });
 
-  it('getInstall answers null for an install this app does not have (404)', async () => {
-    const api = wireAppApi(keys, () => err(404, 'NOT_FOUND', 'Install not found'));
+  it('getInstall answers null for an install this agent does not have (404)', async () => {
+    const api = wireAgentApi(keys, () => err(404, 'NOT_FOUND', 'Install not found'));
     expect(await client(api).getInstall('ins_zzzzzzzzzzzzzzzzzzzzzzzz')).toBeNull();
   });
 
-  it('listInstalls returns every install; an unknown appUserId (404) is []', async () => {
-    const api = wireAppApi(keys, (_m, path) =>
-      path === `/users/${APP_USER}/installs` ? ok({ installs: [installJson(), installJson({ installId: 'ins_cccccccccccccccccccccccc' })] }) : err(404, 'NOT_FOUND')
+  it('listInstalls returns every install; an unknown agentUserId (404) is []', async () => {
+    const api = wireAgentApi(keys, (_m, path) =>
+      path === `/users/${AGENT_USER}/installs` ? ok({ installs: [installJson(), installJson({ installId: 'ins_cccccccccccccccccccccccc' })] }) : err(404, 'NOT_FOUND')
     );
     const c = client(api);
-    const all = await c.listInstalls(APP_USER);
+    const all = await c.listInstalls(AGENT_USER);
     expect(all.map((i) => i.installId)).toEqual([INSTALL, 'ins_cccccccccccccccccccccccc']);
     expect(await c.listInstalls('au_cccccccccccccccccccccccc')).toEqual([]);
-    expect(new URL(api.requests[0].url).pathname).toBe(`/api/v1/apps/someday/users/${APP_USER}/installs`);
+    expect(new URL(api.requests[0].url).pathname).toBe(`/api/v1/agents/someday/users/${AGENT_USER}/installs`);
   });
 
   it('ids are path-encoded', async () => {
-    const api = wireAppApi(keys, () => err(404, 'NOT_FOUND'));
+    const api = wireAgentApi(keys, () => err(404, 'NOT_FOUND'));
     await client(api).getInstall('ins_a/../../x');
-    expect(new URL(api.requests[0].url).pathname).toBe('/api/v1/apps/someday/installs/ins_a%2F..%2F..%2Fx');
+    expect(new URL(api.requests[0].url).pathname).toBe('/api/v1/agents/someday/installs/ins_a%2F..%2F..%2Fx');
   });
 });
 
-describe('WireAppClient: revokeInstall', () => {
+describe('WireAgentClient: revokeInstall', () => {
   it('uninstalls and returns the install as it now reads', async () => {
-    const api = wireAppApi(keys, (m) =>
+    const api = wireAgentApi(keys, (m) =>
       m === 'DELETE'
         ? ok(installJson({ connection: { status: 'revoked', reason: 'uninstalled', connectedAt: '2026-09-01T00:00:00.000Z', lastUsedAt: null } }))
         : err(405, 'METHOD')
@@ -268,16 +277,16 @@ describe('WireAppClient: revokeInstall', () => {
   });
 
   it('null when Wire could not read the install back', async () => {
-    const api = wireAppApi(keys, () => ok(null));
+    const api = wireAgentApi(keys, () => ok(null));
     expect(await client(api).revokeInstall(INSTALL)).toBeNull();
   });
 
   it('502 CONTAINER_UNAVAILABLE is retryable; calling again signs a new token', async () => {
     let n = 0;
-    const api = wireAppApi(keys, () => (++n === 1 ? err(502, 'CONTAINER_UNAVAILABLE', 'Try again') : ok(installJson())));
+    const api = wireAgentApi(keys, () => (++n === 1 ? err(502, 'CONTAINER_UNAVAILABLE', 'Try again') : ok(installJson())));
     const c = client(api);
-    const e = (await c.revokeInstall(INSTALL).catch((x: unknown) => x)) as WireAppApiError;
-    expect(e).toBeInstanceOf(WireAppApiError);
+    const e = (await c.revokeInstall(INSTALL).catch((x: unknown) => x)) as WireAgentApiError;
+    expect(e).toBeInstanceOf(WireAgentApiError);
     expect(e).toBeInstanceOf(WireSdkError);
     expect(e.code).toBe('CONTAINER_UNAVAILABLE');
     expect(e.status).toBe(502);
@@ -286,15 +295,15 @@ describe('WireAppClient: revokeInstall', () => {
   });
 
   it('404 throws NOT_FOUND', async () => {
-    const api = wireAppApi(keys, () => err(404, 'NOT_FOUND', 'Install not found'));
-    const e = (await client(api).revokeInstall(INSTALL).catch((x: unknown) => x)) as WireAppApiError;
+    const api = wireAgentApi(keys, () => err(404, 'NOT_FOUND', 'Install not found'));
+    const e = (await client(api).revokeInstall(INSTALL).catch((x: unknown) => x)) as WireAgentApiError;
     expect(e.code).toBe('NOT_FOUND');
     expect(e.status).toBe(404);
     expect(e.retryable).toBe(false);
   });
 });
 
-describe('WireAppClient: error mapping', () => {
+describe('WireAgentClient: error mapping', () => {
   const cases: [number, string, boolean][] = [
     [401, 'UNAUTHORIZED', false],
     [401, 'INVALID_TOKEN', false],
@@ -309,40 +318,96 @@ describe('WireAppClient: error mapping', () => {
   ];
   for (const [status, code, retryable] of cases) {
     it(`${status} ${code}${retryable ? ' (retryable)' : ''}`, async () => {
-      const api = wireAppApi(keys, () => err(status, code, 'message from Wire'));
-      const e = (await client(api).listInstalls(APP_USER).catch((x: unknown) => x)) as WireAppApiError;
-      expect(e).toBeInstanceOf(WireAppApiError);
+      const api = wireAgentApi(keys, () => err(status, code, 'message from Wire'));
+      const e = (await client(api).listInstalls(AGENT_USER).catch((x: unknown) => x)) as WireAgentApiError;
+      expect(e).toBeInstanceOf(WireAgentApiError);
       expect([e.code, e.status, e.retryable, e.message]).toEqual([code, status, retryable, 'message from Wire']);
     });
   }
 
   it("the door's own refusals come through (a revoked key)", async () => {
     keys.set('pk_runtime', { ...keys.get('pk_runtime')!, revoked: true });
-    const api = wireAppApi(keys, () => ok(installJson()));
-    const e = (await client(api).getInstall(INSTALL).catch((x: unknown) => x)) as WireAppApiError;
+    const api = wireAgentApi(keys, () => ok(installJson()));
+    const e = (await client(api).getInstall(INSTALL).catch((x: unknown) => x)) as WireAgentApiError;
     expect([e.code, e.status]).toEqual(['CREDENTIAL_REVOKED', 401]);
   });
 
   it('a proxy error page (not the envelope) is HTTP_<status>, retryable on 5xx gateways', async () => {
-    const api = wireAppApi(keys, () => ({ status: 502, body: '<html>Bad gateway</html>' }));
-    const e = (await client(api).getInstall(INSTALL).catch((x: unknown) => x)) as WireAppApiError;
+    const api = wireAgentApi(keys, () => ({ status: 502, body: '<html>Bad gateway</html>' }));
+    const e = (await client(api).getInstall(INSTALL).catch((x: unknown) => x)) as WireAgentApiError;
     expect([e.code, e.status, e.retryable]).toEqual(['HTTP_502', 502, true]);
   });
 
   it('a network failure is NETWORK_ERROR, retryable', async () => {
-    const c = client(wireAppApi(keys, () => ok(null)), {
+    const c = client(wireAgentApi(keys, () => ok(null)), {
       fetch: (async () => {
         throw new TypeError('fetch failed');
       }) as unknown as typeof fetch,
     });
-    const e = (await c.getInstall(INSTALL).catch((x: unknown) => x)) as WireAppApiError;
+    const e = (await c.getInstall(INSTALL).catch((x: unknown) => x)) as WireAgentApiError;
     expect([e.code, e.status, e.retryable]).toEqual(['NETWORK_ERROR', undefined, true]);
   });
 
   it('a malformed install is INVALID_RESPONSE', async () => {
-    const api = wireAppApi(keys, () => ok({ installId: INSTALL }));
-    const e = (await client(api).getInstall(INSTALL).catch((x: unknown) => x)) as WireAppApiError;
+    const api = wireAgentApi(keys, () => ok({ installId: INSTALL }));
+    const e = (await client(api).getInstall(INSTALL).catch((x: unknown) => x)) as WireAgentApiError;
     expect(e.code).toBe('INVALID_RESPONSE');
+  });
+});
+
+describe('the pre-0.10 names still work', () => {
+  it('WireAppClient, WireAppApiError and APP_API_AUDIENCE are the agent ones under their old names', () => {
+    expect(WireAppClient).toBe(WireAgentClient);
+    expect(WireAppApiError).toBe(WireAgentApiError);
+    expect(APP_API_AUDIENCE).toBe('wire-app-api');
+    expect(AGENT_API_AUDIENCE).toBe('wire-agent-api');
+  });
+
+  it('the appId option still names the agent, and the client calls the agent paths', async () => {
+    const api = wireAgentApi(keys, () => ok(installJson()));
+    const c = new WireAppClient({ appId: 'someday', runtimeKey: { privateJwk: runtime.privateJwk, keyId: 'pk_runtime' }, baseUrl: 'https://preview.app.usewire.io', fetch: api.fetch });
+    expect(c.agentId).toBe('someday');
+    expect(c.appId).toBe('someday');
+    await c.getInstall(INSTALL);
+    expect(new URL(api.requests[0].url).pathname).toBe(`/api/v1/agents/someday/installs/${INSTALL}`);
+    expect(decodeJwt(api.requests[0].headers.get('authorization')!.slice(7)).aud).toBe('wire-agent-api');
+  });
+
+  it("apiVersion 'apps' calls the deprecated paths with the old audience", async () => {
+    const api = wireAgentApi(keys, (_m, path) => (path.startsWith('/users/') ? ok({ installs: [] }) : ok(installJson())));
+    const c = client(api, { apiVersion: 'apps' });
+    await c.getInstall(INSTALL);
+    await c.revokeInstall(INSTALL);
+    expect(new URL(api.requests[0].url).pathname).toBe(`/api/v1/apps/someday/installs/${INSTALL}`);
+    expect(decodeJwt(api.requests[0].headers.get('authorization')!.slice(7)).aud).toBe('wire-app-api');
+    expect(api.requests[1].method).toBe('DELETE');
+    expect(new URL(api.requests[1].url).pathname).toBe(`/api/v1/apps/someday/installs/${INSTALL}`);
+  });
+
+  it('an install from the deprecated paths (appUserId, app_disconnected) reads in the agent vocabulary', async () => {
+    const legacy = installJson({
+      appUserId: AGENT_USER,
+      connection: { status: 'revoked', reason: 'app_disconnected', connectedAt: '2026-09-01T00:00:00.000Z', lastUsedAt: null },
+      manageUrl: 'https://app.usewire.io/containers/c1/connections#installed-apps',
+    });
+    delete legacy.agentUserId;
+    const api = wireAgentApi(keys, () => ok(legacy));
+    const i = (await client(api, { apiVersion: 'apps' }).getInstall(INSTALL))!;
+    expect(i.agentUserId).toBe(AGENT_USER);
+    expect(i.appUserId).toBe(AGENT_USER);
+    expect(i.connection.reason).toBe('agent_disconnected');
+  });
+
+  it('agentUserId wins when a server sends both', async () => {
+    const api = wireAgentApi(keys, () => ok(installJson({ agentUserId: AGENT_USER, appUserId: 'au_old' })));
+    const i = (await client(api).getInstall(INSTALL))!;
+    expect(i.agentUserId).toBe(AGENT_USER);
+    expect(i.appUserId).toBe(AGENT_USER);
+  });
+
+  it('@usewire/sdk/agent is the same entry as @usewire/sdk/app', () => {
+    expect(agentEntry.WireAgentClient).toBe(WireAgentClient);
+    expect(agentEntry.WireAppClient).toBe(WireAgentClient);
   });
 });
 

@@ -121,7 +121,7 @@ export const EVENT_ID = 'evt_0123456789abcdef0123456789abcdef';
 export function installJson(over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     installId: 'ins_aaaaaaaaaaaaaaaaaaaaaaaa',
-    appUserId: 'au_bbbbbbbbbbbbbbbbbbbbbbbb',
+    agentUserId: 'au_bbbbbbbbbbbbbbbbbbbbbbbb',
     container: {
       id: 'c1',
       name: 'Places',
@@ -132,7 +132,7 @@ export function installJson(over: Record<string, unknown> = {}): Record<string, 
     },
     claimed: true,
     connection: { status: 'active', connectedAt: '2026-09-01T00:00:00.000Z', lastUsedAt: null },
-    manageUrl: 'https://app.usewire.io/containers/c1/connections#installed-apps',
+    manageUrl: 'https://app.usewire.io/containers/c1/connections#installed-agents',
     ...over,
   };
 }

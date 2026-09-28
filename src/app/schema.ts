@@ -2,7 +2,7 @@
  * JSON Schema validation for action input and output: the ENGINE's
  * `validateValue`, vendored (src/vendor/manifest, pinned by MANIFEST_REF).
  *
- * The same code the container runs, so an app and Wire never disagree about
+ * The same code the container runs, so an agent and Wire never disagree about
  * whether a value fits an action's schema. It supports exactly the schema
  * subset the manifest validator admits for action input/output (a schema that
  * passed the manifest validator is one it can check), runs anywhere (no eval,
