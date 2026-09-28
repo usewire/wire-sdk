@@ -258,6 +258,55 @@ describe('WireAgentClient: reads', () => {
     expect(new URL(api.requests[0].url).pathname).toBe(`/api/v1/agents/someday/users/${AGENT_USER}/installs`);
   });
 
+  it('an install behind the registered version carries updateAvailable and upgradeUrl', async () => {
+    const upgradeUrl = 'https://app.usewire.io/containers/c1/connections?upgrade=someday#installed-agents';
+    const api = wireAgentApi(keys, () =>
+      ok(installJson({ installedVersion: '0.1.0', latestVersion: '0.3.0', updateAvailable: true, upgradeUrl }))
+    );
+    const i = (await client(api).getInstall(INSTALL))!;
+    expect(i.installedVersion).toBe('0.1.0');
+    expect(i.latestVersion).toBe('0.3.0');
+    expect(i.updateAvailable).toBe(true);
+    expect(i.upgradeUrl).toBe(upgradeUrl);
+  });
+
+  it('an install on the registered version has no update and no upgradeUrl', async () => {
+    const api = wireAgentApi(keys, (_m, path) =>
+      path === `/users/${AGENT_USER}/installs`
+        ? ok({ installs: [installJson({ installedVersion: '0.3.0', latestVersion: '0.3.0', updateAvailable: false })] })
+        : err(404, 'NOT_FOUND')
+    );
+    const [i] = await client(api).listInstalls(AGENT_USER);
+    expect(i.installedVersion).toBe('0.3.0');
+    expect(i.latestVersion).toBe('0.3.0');
+    expect(i.updateAvailable).toBe(false);
+    expect(i.upgradeUrl).toBeUndefined();
+    expect('upgradeUrl' in i).toBe(false);
+  });
+
+  it('versions read as null when Wire cannot tell, or the agent has no manifest', async () => {
+    const api = wireAgentApi(keys, () => ok(installJson({ installedVersion: null, latestVersion: null, updateAvailable: false })));
+    const i = (await client(api).getInstall(INSTALL))!;
+    expect([i.installedVersion, i.latestVersion, i.updateAvailable, i.upgradeUrl]).toEqual([null, null, false, undefined]);
+  });
+
+  it('an older Wire that sends no version fields reads as null, null, false, no upgradeUrl', async () => {
+    const legacy = installJson();
+    for (const k of ['installedVersion', 'latestVersion', 'updateAvailable', 'upgradeUrl']) expect(k in legacy).toBe(false);
+    const api = wireAgentApi(keys, () => ok(legacy));
+    const i = (await client(api).getInstall(INSTALL))!;
+    expect(i.installedVersion).toBeNull();
+    expect(i.latestVersion).toBeNull();
+    expect(i.updateAvailable).toBe(false);
+    expect(i.upgradeUrl).toBeUndefined();
+  });
+
+  it('a version that is not a string is INVALID_RESPONSE', async () => {
+    const api = wireAgentApi(keys, () => ok(installJson({ installedVersion: 3 })));
+    const e = (await client(api).getInstall(INSTALL).catch((x: unknown) => x)) as WireAgentApiError;
+    expect(e.code).toBe('INVALID_RESPONSE');
+  });
+
   it('ids are path-encoded', async () => {
     const api = wireAgentApi(keys, () => err(404, 'NOT_FOUND'));
     await client(api).getInstall('ins_a/../../x');

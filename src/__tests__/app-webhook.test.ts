@@ -134,6 +134,23 @@ describe('verifyWireWebhook: accepted', () => {
     expect(g.event.install.connection.lastUsedAt).toEqual(new Date('2026-09-02T00:00:00.000Z'));
   });
 
+  it("maps the install's versions and update link, and defaults them when absent", async () => {
+    const upgradeUrl = 'https://app.usewire.io/containers/c1/connections?upgrade=someday#installed-agents';
+    const body = webhookBody({
+      install: installJson({ installedVersion: '0.1.0', latestVersion: '0.3.0', updateAvailable: true, upgradeUrl }),
+    });
+    const v = await verifyWireWebhook(webhookRequest(await signed(body), body), opts());
+    expect(v.event.install).toMatchObject({ installedVersion: '0.1.0', latestVersion: '0.3.0', updateAvailable: true, upgradeUrl });
+
+    // An older Wire sends none of the four.
+    const old = webhookBody();
+    const o = await verifyWireWebhook(webhookRequest(await signed(old), old), opts());
+    expect(o.event.install.installedVersion).toBeNull();
+    expect(o.event.install.latestVersion).toBeNull();
+    expect(o.event.install.updateAvailable).toBe(false);
+    expect(o.event.install.upgradeUrl).toBeUndefined();
+  });
+
   it('takes raw parts: a header record, the raw body, and url or origin + path', async () => {
     const body = webhookBody();
     const token = await signed(body);

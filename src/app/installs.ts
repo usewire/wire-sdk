@@ -76,6 +76,30 @@ export interface WireInstall {
   };
   /** Opens the container's installed agents in the Wire dashboard: link to it from your manage screen. */
   manageUrl: string;
+  /**
+   * The version of your agent's manifest the install's container runs. Null
+   * when your agent has no manifest, the install is no longer installed, or
+   * Wire cannot tell (and from an older Wire that does not send it).
+   */
+  installedVersion: string | null;
+  /**
+   * The version your agent currently has registered with Wire. Null when your
+   * agent has no manifest (and from an older Wire that does not send it).
+   */
+  latestVersion: string | null;
+  /**
+   * True when the install is active and its container runs an older version
+   * than `latestVersion`. Registering a version never updates an install: the
+   * user approves the update in Wire, at `upgradeUrl`. False from an older
+   * Wire that does not send it.
+   */
+  updateAvailable: boolean;
+  /**
+   * Opens the review screen for this install's update in the Wire dashboard,
+   * where the user (signing in to Wire if needed) approves or declines it.
+   * Present only when `updateAvailable` is true. Not a credential.
+   */
+  upgradeUrl?: string;
 }
 
 /** Thrown by installFromWire for anything that is not an install. */
@@ -146,9 +170,14 @@ export function installFromWire(raw: unknown): WireInstall {
       lastUsedAt: dateOrNull(conn.lastUsedAt, 'install.connection.lastUsedAt'),
     },
     manageUrl: str(raw.manageUrl, 'install.manageUrl'),
+    // An older Wire sends none of these: they read as null, null, false.
+    installedVersion: strOrNull(raw.installedVersion, 'install.installedVersion'),
+    latestVersion: strOrNull(raw.latestVersion, 'install.latestVersion'),
+    updateAvailable: raw.updateAvailable === true,
   };
   if (typeof conn.reason === 'string') install.connection.reason = normalizeRevokedReason(conn.reason);
   if (typeof raw.claimUrl === 'string' && raw.claimUrl) install.claimUrl = raw.claimUrl;
+  if (install.updateAvailable && typeof raw.upgradeUrl === 'string' && raw.upgradeUrl) install.upgradeUrl = raw.upgradeUrl;
   return install;
 }
 

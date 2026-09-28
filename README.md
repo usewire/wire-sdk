@@ -668,11 +668,41 @@ for (const i of installs) {
   i.connection.reason;       // when revoked: user_disconnected | agent_disconnected | uninstalled | container_deleted | expired
   i.connection.lastUsedAt;   // Date | null
   i.manageUrl;               // link to the container's installed agents in Wire
+  i.installedVersion;        // "0.1.0": your manifest version the container runs (string | null)
+  i.latestVersion;           // "0.3.0": the version you have registered with Wire (string | null)
+  i.updateAvailable;         // true when an active install runs an older version than latestVersion
+  i.upgradeUrl;              // only when updateAvailable: where the user reviews the update in Wire
 }
 
 const one = await wire.getInstall(user.wireInstallId); // null if your agent has no such install
 await wire.revokeInstall(user.wireInstallId);         // uninstall; resolves with the install, now revoked
 ```
+
+**Updates.** Registering a new version of your manifest never updates anyone's
+container: each user approves the update in Wire. `upgradeUrl` takes them to
+Wire's review screen for that install (they sign in if needed), where they
+approve or decline it; nothing about the approval happens on your site. To offer
+it on your own page:
+
+```typescript
+const install = await wire.getInstall(user.wireInstallId);
+if (install) {
+  const line = [`Connected to ${install.container.name ?? 'a deleted container'}`];
+  if (install.installedVersion) line.push(`Someday ${install.installedVersion}`);
+  // render line.join(' · '), then, when an update exists, a link:
+  if (install.updateAvailable && install.upgradeUrl) {
+    // <a href={install.upgradeUrl}>Update to {install.latestVersion}</a>
+  }
+}
+// "Connected to Places · Someday 0.1.0 · Update to 0.3.0"
+```
+
+`installedVersion` is null when your agent has no manifest, the install is no
+longer installed, or Wire cannot tell which version the container runs, so do
+not assume it is set. `latestVersion` is null when your agent has no manifest.
+Against an older Wire that does not send these fields, the SDK reads
+`installedVersion` and `latestVersion` as null, `updateAvailable` as false, and
+leaves `upgradeUrl` out.
 
 | Method | Wire endpoint | Returns |
 |---|---|---|
@@ -726,7 +756,7 @@ address, not a Wire domain. `"webhooks": null` stops them.
 | Event | Sent when |
 |---|---|
 | `install.created` | A connect made the install active: the first connect, or a reconnect after it was revoked |
-| `install.upgraded` | A connect of an active install applied a newer version of your manifest |
+| `install.upgraded` | An active install was updated to a newer version of your manifest. The user approved it in Wire, either through your connect flow or from Wire's dashboard (for example after following `upgradeUrl`) |
 | `install.disconnected` | The install's last live connection ended (the user disconnected, or you rotated your agent's credentials) |
 | `install.uninstalled` | Your agent was uninstalled from the container, by its owner or by your `revokeInstall` |
 | `install.claimed` | The install's trial container was claimed; `install.agentUserId` is now set |

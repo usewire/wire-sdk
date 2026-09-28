@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.13.0
+
+Update available (SUP-948). Registering a new manifest version never updates an
+install: the user approves the update in Wire. An install now says which
+version its container runs and links to the review screen when a newer one is
+registered.
+
+- `WireInstall` gains four fields, from `getInstall`, `listInstalls`,
+  `revokeInstall` and every install webhook:
+  - `installedVersion: string | null`: the manifest version the install's
+    container runs. Null when the agent has no manifest, the install is no
+    longer installed, or Wire cannot tell.
+  - `latestVersion: string | null`: the version the agent has registered with
+    Wire. Null when the agent has no manifest.
+  - `updateAvailable: boolean`: the install is active and runs an older version
+    than `latestVersion`.
+  - `upgradeUrl?: string`: present only when `updateAvailable` is true. Opens
+    the install's update in the Wire dashboard, where the user approves or
+    declines it.
+- Against an older Wire that does not send them, the SDK reads the versions as
+  null, `updateAvailable` as false, and leaves `upgradeUrl` out.
+- README: `install.upgraded` is described as what it is: an active install was
+  updated to a newer version of your manifest, approved by the user in Wire
+  (through your connect flow, or from Wire's dashboard after `upgradeUrl`).
+
 ## 0.12.0
 
 Agent links. A manifest's tools can now connect the records they write, and
