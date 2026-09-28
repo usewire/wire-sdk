@@ -756,7 +756,7 @@ address, not a Wire domain. `"webhooks": null` stops them.
 | Event | Sent when |
 |---|---|
 | `install.created` | A connect made the install active: the first connect, or a reconnect after it was revoked |
-| `install.upgraded` | A connect of an active install applied a newer version of your manifest |
+| `install.upgraded` | An active install was updated to a newer version of your manifest. The user approved it in Wire, either through your connect flow or from Wire's dashboard (for example after following `upgradeUrl`) |
 | `install.disconnected` | The install's last live connection ended (the user disconnected, or you rotated your agent's credentials) |
 | `install.uninstalled` | Your agent was uninstalled from the container, by its owner or by your `revokeInstall` |
 | `install.claimed` | The install's trial container was claimed; `install.agentUserId` is now set |

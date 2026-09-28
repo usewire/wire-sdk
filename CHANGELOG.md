@@ -21,6 +21,9 @@ registered.
     declines it.
 - Against an older Wire that does not send them, the SDK reads the versions as
   null, `updateAvailable` as false, and leaves `upgradeUrl` out.
+- README: `install.upgraded` is described as what it is: an active install was
+  updated to a newer version of your manifest, approved by the user in Wire
+  (through your connect flow, or from Wire's dashboard after `upgradeUrl`).
 
 ## 0.12.0
 
