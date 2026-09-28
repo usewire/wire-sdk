@@ -1,19 +1,25 @@
 # @usewire/sdk
 
-[Wire](https://usewire.io) is context as a service for agents. A Wire
-container is portable, shareable, composable context that users and
-agents fill together: notes, knowledge bases, project state, and data
-ingested from the SaaS tools they already use.
+[Wire](https://usewire.io) gives every agent a person works with the same
+place to read and write: a container, reached over MCP or REST.
 
-This SDK is for teams building agents, harnesses, or AI infrastructure
-who want Wire container connectivity as a first-class part of the
-product. Three methods. Your user authorizes in their browser; you
-get back a scoped MCP endpoint and API key to hand to your agent.
+This SDK is for teams building agents. Every user gets their own container,
+and you don't build the part underneath: ingest, scope, permissions,
+retrieval, sync, and audit sit behind one connect flow. Wire owns the connect
+screen, the sign-in, and the connection lifecycle.
 
-You don't run the storage. You don't build the import flow. You don't
-manage user data. Wire owns the connect screen, the auth, and the
-connection lifecycle. Your agent keeps speaking MCP, now with whatever
-the user has brought along.
+It covers two kinds of agent:
+
+- **An agent that reads and writes the container.** Your user authorizes in
+  their browser, and you get back a scoped MCP endpoint and API key to hand to
+  your agent. Start at [Connect](#connect).
+- **An agent that brings a manifest.** Connecting it installs its own tools
+  into the user's container, and the user's own agents call them. Wire calls
+  your server when a tool needs it. Start with the end-to-end guide,
+  [Build an agent that brings a manifest](https://docs.usewire.io/build/agents/end-to-end/),
+  and see [Bringing a manifest](#bringing-a-manifest) below.
+
+Full documentation: [docs.usewire.io/build/sdk](https://docs.usewire.io/build/sdk/).
 
 ## Install
 
@@ -73,10 +79,12 @@ interface Connection {
 ```
 
 `installId` and `agentUserId` grant nothing, so they are safe to keep in your
-own database next to your user. An agent keeps them instead of the API key
-and reads the install later from its server: see
+own database next to your user. Keep the API key only if your agent itself
+reads or writes the container. An agent that brings a manifest usually
+doesn't: Wire calls its actions, the user's own agents call its tools, and its
+server reads the install with a runtime key. See
 [Look up installs from your server](#look-up-installs-from-your-server). Both
-are null from a Wire server older than 0.9.0's.
+ids are null from a Wire server older than 0.9.0's.
 
 ## Reuse the install identity
 
@@ -112,7 +120,7 @@ const claimed = await client.claim(connection.apiKey, {
     myUi.show(`Sign up to keep your container: ${url}`);
   },
 });
-// claimed.expiresAt === null — the container is permanent
+// claimed.expiresAt === null: the container is permanent
 ```
 
 The SDK mints a claim URL, hands it to your `onUserPrompt` (or prints it
@@ -131,18 +139,18 @@ await client.getStatus(connection.apiKey);
 Disconnect revokes the apiKey but keeps the install identity, so reconnect
 from the same `deviceKey` still works.
 
-## From a browser app
+## From the browser
 
 Browser agents skip the device flow entirely: `connectInBrowser()` sends
 the user through Wire's authorization screen (Authorization Code + PKCE)
 where they pick a container, and your page gets the Connection back.
 
 ```typescript
-// Starting the flow (your app page):
-await client.connectInBrowser({ redirectUri: 'https://my-app.com/callback' });
+// Starting the flow (any page of your site):
+await client.connectInBrowser({ redirectUri: 'https://my-agent.example/callback' });
 // or popup mode, which resolves in place:
 const connection = await client.connectInBrowser({
-  redirectUri: 'https://my-app.com/callback',
+  redirectUri: 'https://my-agent.example/callback',
   popup: true,
 });
 
@@ -162,7 +170,7 @@ hold a promise open across a user turn, use the primitives underneath:
 ```typescript
 // Turn 1: start the handshake, show the code + URL, persist the handle
 const pending = await client.beginConnect();
-myUi.show(`Code: ${pending.userCode} — open ${pending.url}`);
+myUi.show(`Code: ${pending.userCode}. Open ${pending.url}`);
 save(pending); // plain JSON, safe to stash
 
 // Later turns: single poll, no waiting
@@ -182,15 +190,34 @@ and throws `ALREADY_CLAIMED` on permanent containers.
 ## Bringing a manifest
 
 An agent can do more than read and write a container. It may bring a
-manifest, which installs custom tools into the container the user connects,
-and those tools can call the agent's own HTTPS functions, called actions,
-before or after the Wire tool they wrap. An install is the agent's manifest
-applied to one container. A `save_place` tool, for example, can call your `geocode`
-action on the address and then save the place with coordinates.
+manifest: the kinds of records it keeps (declared objects), custom tools that
+each wrap one Wire tool, and the agent's own HTTPS functions, called actions,
+that a tool runs before or after its Wire tool. Connecting the agent installs
+the manifest into the container the user picks, once they approve it on
+Wire's consent screen. An install is the agent's manifest applied to one
+container, and the agent then manages that container's tools and analysis.
 
 Wire calls your actions. Your agent never calls the container for them, stores
 no secret, and gets nothing at install time. Every call is signed with Wire's
 own Ed25519 key, and you check it against Wire's published keys.
+
+**[Build an agent that brings a manifest](https://docs.usewire.io/build/agents/end-to-end/)**
+walks through a complete one, an agent that saves places with notes, visits
+and events, from registration to shipping updates, with the reasons behind
+each design choice. In short:
+
+- Declare an object for each kind of record, and put values in typed fields.
+- Save records under their common name, and take tags from the calling agent
+  instead of fixing a constant tag.
+- Connect records with `links` on `wire_write`, not ids in metadata, and
+  delete a record with what belongs to it using `withLinked` on `wire_delete`.
+- Store a repeating event as an RRULE, and answer "what's on" with a
+  `wire_query` tool using `wire_rrule_occurs` and `wire_distance_km`.
+- Map values whole (`'{{input.tags}}'`) so they keep their type and are left
+  out when absent.
+- Hide Wire's built-in tools with `builtin_tools`, and leave `analysis` out
+  unless a tool needs a graph.
+- Keep `instructions` short, and make the `skill` complete on its own.
 
 The agent side lives on its own entry point, so agents that only connect never
 load it:
@@ -202,11 +229,11 @@ import { defineManifest, defineAction } from '@usewire/sdk/agent';
 `@usewire/sdk/app` is the same entry under its pre-0.10 name and keeps
 working.
 
-> **Status:** actions ship with the Wire release that runs them. Until then the
-> manifest format, the action-call claims and the registration endpoint may
-> still change.
-
 ### The manifest
+
+A minimal manifest with one action and one tool. The action passes coordinates
+through when the calling agent already has them, and geocodes only when it
+doesn't:
 
 ```typescript
 // manifest.ts
@@ -214,26 +241,34 @@ import { defineManifest } from '@usewire/sdk/agent';
 
 export const manifest = defineManifest({
   manifest: 1,
-  app: { id: 'geo_app', name: 'Geo App', version: '0.1.0' },
+  app: { id: 'place_keeper', name: 'Place Keeper', version: '1.0.0' },
+  objects: [
+    {
+      name: 'place',
+      geo: { lat: 'lat', lng: 'lng' },
+      fields: [
+        { name: 'name', type: 'text' },
+        { name: 'address', type: 'text' },
+        { name: 'lat', type: 'number' },
+        { name: 'lng', type: 'number' },
+      ],
+    },
+  ],
   actions: [
     {
       name: 'geocode',
       description:
-        'Turns a street address into coordinates and a city. The address is sent to the agent; nothing is stored there.',
-      url: 'https://geo-app.example.workers.dev/geocode',
+        'Turns a street address into coordinates. Receives the address, and the coordinates when your agent already has them, in which case they are returned unchanged. Nothing is stored.',
+      url: 'https://places.example.com/actions/geocode',
       input: {
         type: 'object',
-        properties: { address: { type: 'string', minLength: 1 } },
+        properties: { address: { type: 'string', minLength: 1 }, lat: { type: 'number' }, lng: { type: 'number' } },
         required: ['address'],
       },
       output: {
         type: 'object',
-        properties: {
-          lat: { type: 'number' },
-          lng: { type: 'number' },
-          locality: { type: 'string' },
-        },
-        required: ['lat', 'lng'],
+        properties: { address: { type: 'string' }, lat: { type: 'number' }, lng: { type: 'number' } },
+        required: ['address', 'lat', 'lng'],
       },
       timeout_ms: 5000,
     },
@@ -241,26 +276,42 @@ export const manifest = defineManifest({
   tools: [
     {
       name: 'save_place',
-      description: 'Save a place the user wants to go. Give the street address.',
+      description: 'Save a place under the name people know it by. Pass lat and lng if you have them.',
       inputSchema: {
         type: 'object',
-        properties: { name: { type: 'string' }, address: { type: 'string' } },
+        properties: {
+          name: { type: 'string' },
+          address: { type: 'string' },
+          lat: { type: 'number' },
+          lng: { type: 'number' },
+          tags: { type: 'array', items: { type: 'string', maxLength: 40 }, maxItems: 12 },
+        },
         required: ['name', 'address'],
       },
-      before: { action: 'geocode', args: { address: '{{input.address}}' } },
+      before: { action: 'geocode', args: { address: '{{input.address}}', lat: '{{input.lat}}', lng: '{{input.lng}}' } },
       tool: {
         name: 'wire_write',
         args: {
-          content: '{{input.name}}',
-          fields: { name: '{{input.name}}', lat: '{{before.lat}}', lng: '{{before.lng}}' },
+          content: '{{input.name}}, {{before.address}}',
+          object: 'place',
+          fields: { name: '{{input.name}}', address: '{{before.address}}', lat: '{{before.lat}}', lng: '{{before.lng}}' },
+          tags: '{{input.tags}}',
         },
       },
     },
   ],
+  builtin_tools: {
+    wire_explore: { enabled: false },
+    wire_navigate: { enabled: false },
+    wire_search: { enabled: false },
+    wire_write: { enabled: false },
+    wire_delete: { enabled: false },
+  },
 });
 ```
 
-- `app.id` is the manifest id: the agent id you registered with Wire, with `-`
+- `app` is the manifest format's literal field name, and names your agent.
+  `app.id` is the manifest id: the agent id you registered with Wire, with `-`
   as `_` (lowercase letters, digits and underscores). It is also the audience
   of every action call, so a call meant for another agent never verifies in
   yours.
@@ -269,6 +320,13 @@ export const manifest = defineManifest({
 - `url` must be https on a public host. Wire calls exactly this URL and signs
   it into every call. `timeout_ms` defaults to, and is capped at, 8000.
 - An action receives only the fields its tool's mapping sends it.
+- `builtin_tools` sets each Wire built-in tool's visibility (`enabled`,
+  `transports: { mcp, rest }`). A hidden built-in still runs under your own
+  tools. `analysis: { entity?, provenance? }` turns analysis graphs on; left
+  out, both are off, since an install sets both.
+- `wire_write` takes `links: [{ to, type, properties? }]` and `wire_delete`
+  takes `withLinked: { types, direction: 'incoming' }`. A link's `to` must come
+  from a required input.
 
 `defineManifest` runs Wire's own manifest validator, the same one Wire runs
 when you register and a container runs when it installs your agent, so a
@@ -305,7 +363,7 @@ skill may not show the instructions next to it, and a client that never loads
 skills only has the instructions.
 
 The frontmatter `name` is the skill's directory, and so part of its URI: a
-skill named `geo-app` is served as `skill://geo-app/SKILL.md`. It must be 1 to
+skill named `place-keeper` is served as `skill://place-keeper/SKILL.md`. It must be 1 to
 64 lowercase letters, digits and hyphens, with no leading, trailing or doubled
 hyphen. Refer to the skill by that URI from `instructions`.
 
@@ -324,9 +382,9 @@ approving. When they change:
 import { defineManifest, defineSkill } from '@usewire/sdk/agent';
 
 const skill = defineSkill({
-  name: 'geo-app', // lowercase letters, digits and single hyphens; the skill's directory
+  name: 'place-keeper', // lowercase letters, digits and single hyphens; the skill's directory
   description: 'Save places the user wants to go. Use when the user mentions a place.',
-  body: `# Geo App
+  body: `# Place Keeper
 
 1. Call \`search_places\` first, so you don't save a duplicate.
 2. Call \`save_place\` with the street address.
@@ -335,9 +393,9 @@ const skill = defineSkill({
 
 export const manifest = defineManifest({
   manifest: 1,
-  app: { id: 'geo_app', name: 'Geo App', version: '0.2.0' },
+  app: { id: 'place_keeper', name: 'Place Keeper', version: '1.1.0' },
   // ...actions, tools
-  instructions: 'Search before you save. Read skill://geo-app/SKILL.md for the full guide.',
+  instructions: 'Search before you save. Read skill://place-keeper/SKILL.md for the full guide.',
   skill,
 });
 ```
@@ -374,27 +432,27 @@ key you add to the agent. An install's device key cannot register a manifest,
 since anyone can create one for any agent id.
 
 **1. Create a publisher key.** Generate a keypair and keep the private half
-secret, as you would any deploy credential:
+secret, as you would any deploy credential. `generateRuntimeKey()` makes a plain
+Ed25519 key pair, the same kind for both of your agent's keys:
 
 ```typescript
-import { exportJWK, generateKeyPair } from 'jose';
+import { generateRuntimeKey } from '@usewire/sdk/agent';
 
-const { privateKey, publicKey } = await generateKeyPair('EdDSA', { crv: 'Ed25519', extractable: true });
-const privateJwk = await exportJWK(privateKey); // store this in your secrets manager
-const publicKeyB64 = (await exportJWK(publicKey)).x!; // 43-character base64url
+const { privateJwk, publicKey } = await generateRuntimeKey();
+// Store JSON.stringify(privateJwk) in your CI secrets. publicKey is 43 characters of base64url.
 ```
 
-Then add the public half to the agent. This needs a signed-in member of the
-agent's organization with permission to update it (`organization: update`):
+Then add the public half to the agent. This needs a signed-in owner of the
+agent's organization (`organization: update`):
 
 ```http
 POST https://app.usewire.io/api/v1/agents/<agent id>/publisher-keys
 Content-Type: application/json
 
-{ "publicKey": "<publicKeyB64>", "label": "CI deploy key" }
+{ "publicKey": "<publicKey>", "label": "CI deploy key" }
 ```
 
-The answer is `{ "id": "pk_…" }`. `GET` on the same path lists the agent's
+The answer's `id` is the key id (`pk_…`). `GET` on the same path lists the agent's
 publisher keys, and `DELETE …/publisher-keys/<id>` revokes one.
 
 **2. Register.** Pass the publisher key as the client's `deviceKey`, with its
@@ -405,27 +463,29 @@ import { WireClient } from '@usewire/sdk';
 import { manifest } from './manifest';
 
 const client = new WireClient({
-  agentId: 'geo-app',
-  deviceKey: { privateJwk, publicKey: publicKeyB64, credentialId: 'pk_…' },
+  agentId: 'place-keeper',
+  deviceKey: { privateJwk, publicKey, credentialId: 'pk_…' },
 });
 const registered = await client.registerManifest(manifest);
 // { agentId, appId, version, hash, status: 'created' | 'updated' | 'unchanged', tools, baseTools, actions }
 ```
 
 `manifest.app.id` must be your agent id with `-` changed to `_` (agent
-`geo-app`, manifest id `geo_app`), because manifest ids become tool-name
-prefixes. `registered.agentId` is the agent id and `registered.appId` the
+`place-keeper`, manifest id `place_keeper`), because manifest ids become
+tool-name prefixes. `registered.agentId` is the agent id and `registered.appId` the
 manifest id.
 
-Registering an identical document again answers `unchanged`. Bump
-`app.version` to ship a change. Errors throw `WireSdkError`:
+Registering an identical document again answers `unchanged`, so it is safe
+to run on every deploy. Bump `app.version` to ship a change. Registering never
+changes anyone's container: each user approves the new version in Wire (see
+[Look up installs from your server](#look-up-installs-from-your-server)). Errors throw `WireSdkError`:
 
 | Status | Code | Meaning |
 |---|---|---|
 | 422 | `INVALID_MANIFEST` | `details.errors` lists each problem with its path |
-| 409 | | this `app.version` is already registered with different content |
-| 503 | | manifest registration is not available on this environment yet |
-| 401 | | the key is not a live publisher key of this agent |
+| 409 | `VERSION_EXISTS` | this `app.version` is already registered with different content |
+| 503 | `UNAVAILABLE` | Wire could not read or store the manifest; try again |
+| 401 | | the key is not a live publisher key of this agent (a runtime key is refused) |
 
 ### Serve an action (Cloudflare Worker)
 
@@ -440,23 +500,24 @@ It also answers before Wire's timeout would fire (504), and aborts
 import { defineAction, WireActionError } from '@usewire/sdk/agent';
 import { manifest } from './manifest';
 
-const geocode = defineAction<{ address: string }, { lat: number; lng: number; locality?: string }>(
-  manifest,
-  'geocode',
-  async ({ address }, ctx) => {
-    const res = await fetch(`https://geocoder.example/search?q=${encodeURIComponent(address)}`, {
-      signal: ctx.signal,
-    });
-    const [hit] = (await res.json()) as Array<{ lat: string; lon: string; city?: string }>;
-    if (!hit) throw new WireActionError('NOT_FOUND', 'No match for that address', 404);
-    return { lat: Number(hit.lat), lng: Number(hit.lon), locality: hit.city };
-  }
-);
+const geocode = defineAction<
+  { address: string; lat?: number; lng?: number },
+  { address: string; lat: number; lng: number }
+>(manifest, 'geocode', async ({ address, lat, lng }, ctx) => {
+  // The calling agent already had coordinates: return them, look nothing up.
+  if (lat !== undefined && lng !== undefined) return { address, lat, lng };
+  const res = await fetch(`https://geocoder.example/search?q=${encodeURIComponent(address)}`, {
+    signal: ctx.signal,
+  });
+  const [hit] = (await res.json()) as Array<{ lat: string; lon: string; display_name: string }>;
+  if (!hit) throw new WireActionError('NOT_FOUND', 'No match for that address', 404);
+  return { address: hit.display_name, lat: Number(hit.lat), lng: Number(hit.lon) };
+});
 
 export default {
   fetch(request: Request) {
     const { pathname } = new URL(request.url);
-    if (pathname === '/geocode') return geocode.fetch(request);
+    if (pathname === '/actions/geocode') return geocode.fetch(request);
     return new Response('Not found', { status: 404 });
   },
 };
@@ -466,9 +527,9 @@ export default {
 and `signal`. Throw `WireActionError` for an error the agent should see.
 Anything else thrown becomes a generic 500, so internals never reach the agent.
 
-**Hono:** `app.post('/geocode', geocode.hono)`.
-**Node:** `http.createServer(toNodeHandler(geocode, { origin: 'https://geo-app.example.workers.dev' }))`,
-or `app.post('/geocode', toNodeHandler(geocode, { origin }))` in Express. Mount
+**Hono:** `app.post('/actions/geocode', geocode.hono)`.
+**Node:** `http.createServer(toNodeHandler(geocode, { origin: 'https://places.example.com' }))`,
+or `app.post('/actions/geocode', toNodeHandler(geocode, { origin }))` in Express. Mount
 it before any JSON body parser: the signature covers the raw body bytes, and a
 parsed and re-serialized body does not hash the same.
 
@@ -510,9 +571,9 @@ import { verifyWireAction, WireActionAuthError } from '@usewire/sdk/agent';
 
 try {
   const { connectionId, containerId, action } = await verifyWireAction(request, {
-    agentId: 'geo-app', // Wire signs for the manifest id, geo_app
+    agentId: 'place-keeper', // Wire signs for the manifest id, place_keeper
     action: 'geocode',
-    // url: 'https://geo-app.example.workers.dev/geocode', // behind a proxy
+    // url: 'https://places.example.com/actions/geocode', // behind a proxy
   });
   const input = await request.json(); // still readable: verification reads a clone
 } catch (err) {
@@ -640,7 +701,7 @@ const { privateJwk, publicKey } = await generateRuntimeKey();
 ```
 
 ```bash
-curl -X POST https://app.usewire.io/api/v1/agents/someday/publisher-keys \
+curl -X POST https://app.usewire.io/api/v1/agents/place-keeper/publisher-keys \
   -H 'content-type: application/json' --cookie "$WIRE_SESSION" \
   -d '{ "publicKey": "<publicKey>", "label": "production server", "purpose": "runtime" }'
 # → { "success": true, "data": { "id": "pk_…", "purpose": "runtime" } }
@@ -656,7 +717,7 @@ Then, in a Worker (or Node 18+, Bun, Deno):
 import { WireAgentClient } from '@usewire/sdk/agent';
 
 const wire = new WireAgentClient({
-  agentId: 'someday',
+  agentId: 'place-keeper',
   runtimeKey: { privateJwk: env.WIRE_RUNTIME_KEY, keyId: env.WIRE_RUNTIME_KEY_ID },
   // baseUrl: 'https://preview.app.usewire.io',
 });
@@ -688,13 +749,13 @@ it on your own page:
 const install = await wire.getInstall(user.wireInstallId);
 if (install) {
   const line = [`Connected to ${install.container.name ?? 'a deleted container'}`];
-  if (install.installedVersion) line.push(`Someday ${install.installedVersion}`);
+  if (install.installedVersion) line.push(`Place Keeper ${install.installedVersion}`);
   // render line.join(' · '), then, when an update exists, a link:
   if (install.updateAvailable && install.upgradeUrl) {
     // <a href={install.upgradeUrl}>Update to {install.latestVersion}</a>
   }
 }
-// "Connected to Places · Someday 0.1.0 · Update to 0.3.0"
+// "Connected to Places · Place Keeper 0.1.0 · Update to 0.3.0"
 ```
 
 `installedVersion` is null when your agent has no manifest, the install is no
@@ -745,9 +806,9 @@ changes, so your records stay right between visits. Register the URL and the
 events on your agent record (same permission as adding a key):
 
 ```bash
-curl -X PATCH https://app.usewire.io/api/v1/agents/someday \
+curl -X PATCH https://app.usewire.io/api/v1/agents/place-keeper \
   -H 'content-type: application/json' --cookie "$WIRE_SESSION" \
-  -d '{ "webhooks": { "url": "https://someday.example/webhooks/wire", "events": ["install.created", "install.uninstalled", "install.disconnected", "install.claimed", "install.expiring"] } }'
+  -d '{ "webhooks": { "url": "https://places.example.com/webhooks/wire", "events": ["install.created", "install.uninstalled", "install.disconnected", "install.claimed", "install.expiring"] } }'
 ```
 
 The URL follows the action URL rules: https only, no credentials, no private
@@ -790,8 +851,8 @@ const webhook = defineWebhook(
     default: (event) => console.log('unhandled', event.type, event.id),
   },
   {
-    agentId: 'someday',
-    // url: 'https://someday.example/webhooks/wire', // behind a proxy: the registered URL
+    agentId: 'place-keeper',
+    // url: 'https://places.example.com/webhooks/wire', // behind a proxy: the registered URL
     replayStore, // durable and shared in production: see below
   }
 );
@@ -806,7 +867,7 @@ export default {
 
 Or one function for every event: `defineWebhook((event, ctx) => { ... }, opts)`.
 **Hono:** `app.post('/webhooks/wire', webhook.hono)`. **Node:**
-`toNodeHandler(webhook, { origin: 'https://someday.example' })`, mounted before
+`toNodeHandler(webhook, { origin: 'https://places.example.com' })`, mounted before
 any JSON body parser.
 
 How it answers, and what Wire does with it:
@@ -856,8 +917,8 @@ a Fetch `Request` or the raw parts:
 import { verifyWireWebhook, WireWebhookError } from '@usewire/sdk/agent';
 
 try {
-  const { event, release } = await verifyWireWebhook(request, { agentId: 'someday', replayStore });
-  // or: verifyWireWebhook({ headers: req.headers, rawBody, url: req.url }, { agentId, origin: 'https://someday.example' })
+  const { event, release } = await verifyWireWebhook(request, { agentId: 'place-keeper', replayStore });
+  // or: verifyWireWebhook({ headers: req.headers, rawBody, url: req.url }, { agentId, origin: 'https://places.example.com' })
   try {
     await handle(event);
   } catch {
@@ -975,19 +1036,6 @@ working and is marked deprecated, so nothing breaks on upgrade.
 The client now calls `/api/v1/agents/{agentId}/...` with
 `aud: "wire-agent-api"`. Pass `apiVersion: 'apps'` for a Wire deployment that
 has not shipped the agent paths yet.
-
-## Migrating from 0.1.x
-
-0.2.0 renames the registered-integration primitive from `app` to `agent` across the public surface. Functionality is unchanged.
-
-| 0.1.x | 0.2.0 |
-|---|---|
-| `new WireClient({ appId })` | `new WireClient({ agentId })` |
-| `client.appId` | `client.agentId` |
-| `connection.appId` | `connection.agentId` |
-| `status.app` | `status.agent` |
-
-Rename your call sites; nothing else changes.
 
 ## License
 
