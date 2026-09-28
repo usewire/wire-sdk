@@ -90,9 +90,19 @@ export interface WireManifest {
   tools?: ManifestTool[];
   /** Base tools (e.g. "wire_search") to keep visible to the agent's grant beside its own tools. */
   base_tools?: string[];
-  /** Server instructions shown to the connecting agent. */
+  /**
+   * The MCP server `instructions` every client connecting to a container your
+   * agent manages receives on `initialize` (at most 16,000 characters). The
+   * short rules, for clients that never load skills.
+   */
   instructions?: string;
-  /** Skill contents (SKILL.md). */
+  /**
+   * The skill: a SKILL.md in the Agent Skills format (at most 64,000
+   * characters), the full usage guide. Installed with your agent and served by
+   * the container as `skill://<name>/SKILL.md` over MCP's Skills extension.
+   * Write it with `defineSkill()` to get frontmatter Wire always accepts. With a
+   * skill and no `instructions`, connecting clients are pointed at the skill.
+   */
   skill?: string;
 }
 

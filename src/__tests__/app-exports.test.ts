@@ -83,6 +83,11 @@ describe('package exports', () => {
       'normalizeActionUrl',
       'validateManifest',
       'MANIFEST_VALIDATOR_REF',
+      // SUP-962
+      'defineSkill',
+      'skillFrontmatter',
+      'parseSkill',
+      'skillUri',
       // SUP-958
       'WireAppClient',
       'WireAppApiError',

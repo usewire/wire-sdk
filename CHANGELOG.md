@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.11.0
+
+Agent skills (SUP-962). A manifest's `skill` and `instructions` now reach the
+agents that use a container your agent manages: the container serves the skill
+over MCP's Skills extension as `skill://<name>/SKILL.md`, and sends
+`instructions` as the MCP server instructions.
+
+- `defineSkill({ name, description, license?, compatibility?, metadata?, body })`
+  writes a `SKILL.md` whose frontmatter Wire always accepts (every value
+  quoted), and `defineSkill(text)` checks one you wrote. Both throw
+  `WireManifestError` with paths like `skill.name`.
+- `skillFrontmatter(text)` returns the frontmatter as a host reads it.
+  `parseSkill` (Wire's own reader), `skillUri`, `SkillFrontmatter`,
+  `SkillInput` and the limits (`SKILL_MAX`, `INSTRUCTIONS_MAX`,
+  `SKILL_NAME_MAX`, `SKILL_DESCRIPTION_MAX`, ...) are exported from
+  `@usewire/sdk/agent`.
+- Vendors the manifest validator at usewire/wire@c1aa2a6, the engine release
+  that serves skills. `defineManifest` now refuses a `skill` that is not a
+  valid Agent Skills `SKILL.md`:
+  - `name` and `description` are required;
+  - `license`, `compatibility` and `metadata` are optional;
+  - unknown fields and `allowed-tools` are refused;
+  - the frontmatter is a strict YAML subset.
+
 ## 0.10.0
 
 "App" becomes "agent" (SUP-948). There are no apps: an SDK-built agent may

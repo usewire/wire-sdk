@@ -281,6 +281,92 @@ The validator is a copy of Wire's, pinned to a Wire release. `MANIFEST_VALIDATOR
 says which, and `registerManifest` sends it (`X-Wire-Manifest-Validator`), so Wire can tell you when your SDK
 is behind.
 
+### A skill and instructions for the agents that use it
+
+A manifest can tell the agents that use a container your agent manages how to
+use it, in two ways:
+
+- **`instructions`**: sent as the MCP server instructions in the answer to
+  `initialize`, so every client gets them when it connects, and most clients
+  put them in front of the model. At most 16,000 characters. If you give a
+  skill and no instructions, connecting clients get one line pointing at the
+  skill instead.
+- **`skill`**: a `SKILL.md` in the [Agent Skills](https://agentskills.io/specification)
+  format, the full usage guide. At most 64,000 characters. When your agent is
+  installed, the container serves it over MCP's Skills extension
+  (`io.modelcontextprotocol/skills`) as `skill://<name>/SKILL.md`. Hosts that
+  support Skills load it on demand, when it's relevant, and check it against
+  the digest the container lists for it. Any client can also read it as a
+  resource. Reading it is free: it costs the user no credits.
+
+Write `instructions` as the few rules an agent must follow even if it never
+opens the skill, and make the skill complete on its own. A host that loads the
+skill may not show the instructions next to it, and a client that never loads
+skills only has the instructions.
+
+The frontmatter `name` is the skill's directory, and so part of its URI: a
+skill named `geo-app` is served as `skill://geo-app/SKILL.md`. It must be 1 to
+64 lowercase letters, digits and hyphens, with no leading, trailing or doubled
+hyphen. Refer to the skill by that URI from `instructions`.
+
+The user sees both on the consent screen and can read them in full before
+approving. When they change:
+
+- **Existing installs** start serving the skill and instructions of the
+  version their user approved the next time the container opens, including
+  installs made before Wire served skills. Nobody has to reconnect.
+- **An update** ships the way every manifest change does: register it with a
+  bumped `app.version`. The consent screen says the skill or instructions
+  changed, and the new ones reach a container after its user approves the
+  upgrade. Until then, the container keeps serving the version they approved.
+
+```typescript
+import { defineManifest, defineSkill } from '@usewire/sdk/agent';
+
+const skill = defineSkill({
+  name: 'geo-app', // lowercase letters, digits and single hyphens; the skill's directory
+  description: 'Save places the user wants to go. Use when the user mentions a place.',
+  body: `# Geo App
+
+1. Call \`search_places\` first, so you don't save a duplicate.
+2. Call \`save_place\` with the street address.
+`,
+});
+
+export const manifest = defineManifest({
+  manifest: 1,
+  app: { id: 'geo_app', name: 'Geo App', version: '0.2.0' },
+  // ...actions, tools
+  instructions: 'Search before you save. Read skill://geo-app/SKILL.md for the full guide.',
+  skill,
+});
+```
+
+The frontmatter takes these fields:
+
+- `name` and `description`, both required. `description` is at most 1,024
+  characters.
+- `license` and `compatibility` (each at most 500 characters) and `metadata`
+  (at most 64 string keys, each to a string value of at most 1,024
+  characters), all optional.
+
+Any other field is refused, and so is `allowed-tools`, because a skill a
+container serves can't pre-approve tools on the user's machine.
+
+Wire reads the frontmatter as a strict subset of YAML, so every client reads it
+the same way:
+
+- Write each field on one line, plain or quoted.
+- Quote a value that would otherwise read as a number, a boolean or null, like
+  `version: "1.0"`.
+- Folded (`>`) and literal (`|`) blocks are refused.
+
+`defineSkill` writes each value as a quoted string, so what it builds always
+passes. Given a string instead, it checks a `SKILL.md` you wrote. It throws
+`WireManifestError` with paths such as `skill.name`. `parseSkill` returns the
+errors instead, for a CI check. `defineManifest` runs the same check on the
+manifest's `skill`.
+
 ### Register it
 
 Registration is signed with one of your agent's **publisher keys**, an Ed25519
