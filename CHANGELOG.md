@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.11.0
 
 Agent skills (SUP-962). A manifest's `skill` and `instructions` now reach the
 agents that use a container your agent manages: the container serves the skill
@@ -16,8 +16,8 @@ over MCP's Skills extension as `skill://<name>/SKILL.md`, and sends
   `SkillInput` and the limits (`SKILL_MAX`, `INSTRUCTIONS_MAX`,
   `SKILL_NAME_MAX`, `SKILL_DESCRIPTION_MAX`, ...) are exported from
   `@usewire/sdk/agent`.
-- Vendors the manifest validator at usewire/wire@cc4f846 (to be re-pinned to the
-  merged engine commit). `defineManifest` now refuses a `skill` that is not a
+- Vendors the manifest validator at usewire/wire@c1aa2a6, the engine release
+  that serves skills. `defineManifest` now refuses a `skill` that is not a
   valid Agent Skills `SKILL.md`:
   - `name` and `description` are required;
   - `license`, `compatibility` and `metadata` are optional;
