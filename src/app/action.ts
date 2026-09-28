@@ -21,6 +21,7 @@ import {
 import type { ReplayStore } from './replay.js';
 import { compileSchema, type SchemaIssue } from './schema.js';
 import {
+  actionAudience,
   checkJwksUrl,
   DEFAULT_WIRE_JWKS_URL,
   normalizeActionUrl,
@@ -46,20 +47,22 @@ export interface ActionContext {
 export type ActionHandler<I, O> = (input: I, ctx: ActionContext) => O | Promise<O>;
 
 export interface DefineActionOptions {
-  /** The `aud` to require. Defaults to the manifest's `app.id`. */
+  /** Your agent id, when it is not the manifest's (the `aud` is its manifest form). Defaults to the manifest's `app.id`. */
+  agentId?: string;
+  /** @deprecated Use `agentId`. The exact `aud` to require. */
   appId?: string;
   /** Wire's JWKS URL. Defaults to DEFAULT_WIRE_JWKS_URL. */
   jwksUrl?: string;
   /**
    * The public URL Wire calls this action at, checked against the token's
    * `wire_url`. Defaults to `request.url`. Behind a proxy or TLS terminator
-   * that changes what the app sees, set it to the action's `url` from your
+   * that changes what the agent sees, set it to the action's `url` from your
    * manifest. See `normalizeActionUrl` for the comparison.
    */
   url?: string;
   /**
    * Shared, atomic replay store. The default is in memory, per instance —
-   * pass a shared one if the app runs more than one instance.
+   * pass a shared one if the agent runs more than one instance.
    */
   replayStore?: ReplayStore;
   /** Clock for tests. */
@@ -124,8 +127,8 @@ export function defineAction<
   const action: ManifestAction = found;
   if (typeof handler !== 'function') throw new TypeError('defineAction: handler must be a function');
 
-  const appId = options.appId ?? manifest.app?.id;
-  if (!appId) throw new TypeError('defineAction: no appId (set manifest.app.id or options.appId)');
+  const appId = actionAudience(options) ?? manifest.app?.id;
+  if (!appId) throw new TypeError('defineAction: no agent id (set manifest.app.id or options.agentId)');
 
   const checkInput = compileSchema(action.input, 'input');
   const checkOutput = compileSchema(action.output, 'output');

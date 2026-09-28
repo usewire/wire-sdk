@@ -1,7 +1,7 @@
 /**
  * Verify and serve Wire's install webhooks (SUP-958).
  *
- * Wire POSTs a signed event to an app's webhook URL whenever one of its
+ * Wire POSTs a signed event to an agent's webhook URL whenever one of its
  * installs changes. The request:
  *
  *   Authorization:      Bearer <JWT>
@@ -15,7 +15,7 @@
  * never a webhook and a webhook token is never an action call. What a valid
  * request proves:
  *
- *   - Wire sent it, for THIS app (`iss` "wire", `aud` the app id), just now
+ *   - Wire sent it, for THIS agent (`iss` "wire", `aud` the agent id), just now
  *     (60-second lifetime, small clock tolerance);
  *   - at THIS URL (`wire_url`, compared the same way action URLs are);
  *   - with THIS body (`wire_body_sha256` over the raw bytes, checked before
@@ -132,15 +132,18 @@ export interface RawWebhookRequest {
 
 export interface VerifyWireWebhookOptions {
   /**
-   * Your app id: the `aud` Wire signs for. The agent id (`geo-app`); the
-   * manifest form (`geo_app`) names the same app and is accepted too.
+   * Your agent id: the `aud` Wire signs for (`geo-app`); the manifest form
+   * (`geo_app`) names the same agent and is accepted too. Required unless the
+   * deprecated `appId` is set.
    */
-  appId: string;
+  agentId?: string;
+  /** @deprecated Use `agentId`. */
+  appId?: string;
   /**
-   * The public URL Wire calls: the webhook URL registered on your app. Checked
+   * The public URL Wire calls: the webhook URL registered on your agent. Checked
    * against the token's `wire_url`. Defaults to the request's URL (or `origin`
    * plus its path). Set it when a proxy or TLS terminator changes what the
-   * app sees.
+   * agent sees.
    */
   url?: string;
   /**
@@ -210,8 +213,9 @@ export async function verifyWebhookInput(
   input: Request | RawWebhookRequest,
   options: VerifyWireWebhookOptions
 ): Promise<VerifiedWireWebhook> {
-  if (!options?.appId || typeof options.appId !== 'string') throw new TypeError('verifyWireWebhook: appId is required');
-  const audiences = audiencesFor(options.appId);
+  const agentId = agentIdOption(options);
+  if (!agentId) throw new TypeError('verifyWireWebhook: agentId is required');
+  const audiences = audiencesFor(agentId);
   const expectedUrl = expectedWebhookUrl(input, options);
   const tolerance = Math.min(
     Math.max(0, options.clockToleranceSec ?? DEFAULT_CLOCK_TOLERANCE_SEC),
@@ -416,8 +420,9 @@ export function defineWebhook(
   handlers: WebhookHandler | WebhookHandlers,
   options: DefineWebhookOptions
 ): WireWebhookEndpoint {
-  if (!options?.appId) throw new TypeError('defineWebhook: appId is required');
-  audiencesFor(options.appId);
+  const agentId = agentIdOption(options);
+  if (!agentId) throw new TypeError('defineWebhook: agentId is required');
+  audiencesFor(agentId);
   checkJwksUrl(jwksUrlOf(options));
   if (options.url !== undefined && normalizeActionUrl(options.url) === null) {
     throw new TypeError('defineWebhook: url must be an absolute http(s) URL');
@@ -478,9 +483,15 @@ export function defineWebhook(
 // ─── helpers ────────────────────────────────────────────────────────────────
 
 /** The accepted `aud` values: the agent id first, then its manifest form when different. */
-function audiencesFor(appId: string): string[] {
-  const agentId = appId.replace(/_/g, '-');
-  if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(agentId)) throw new TypeError(`"${appId}" is not an app id`);
+/** The agent id an options object names: `agentId`, or the deprecated `appId`. */
+function agentIdOption(options: { agentId?: unknown; appId?: unknown } | undefined): string | null {
+  const v = options?.agentId ?? options?.appId;
+  return typeof v === 'string' && v ? v : null;
+}
+
+function audiencesFor(id: string): string[] {
+  const agentId = id.replace(/_/g, '-');
+  if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(agentId)) throw new TypeError(`"${id}" is not an agent id`);
   const manifestId = agentId.replace(/-/g, '_');
   return manifestId === agentId ? [agentId] : [agentId, manifestId];
 }
@@ -581,7 +592,7 @@ function mapJoseError(err: unknown): WireWebhookError {
   if (err instanceof joseErrors.JWTClaimValidationFailed) {
     if (err.claim === 'typ') return new WireWebhookError('MALFORMED_TOKEN', `JWT typ must be ${WIRE_WEBHOOK_JWT_TYP}`);
     if (err.claim === 'iss') return new WireWebhookError('INVALID_ISSUER', 'Token issuer is not Wire');
-    if (err.claim === 'aud') return new WireWebhookError('INVALID_AUDIENCE', 'Token is not for this app');
+    if (err.claim === 'aud') return new WireWebhookError('INVALID_AUDIENCE', 'Token is not for this agent');
     return new WireWebhookError('INVALID_CLAIMS', `Claim check failed: ${err.claim} (${err.reason})`);
   }
   if (err instanceof joseErrors.JWSSignatureVerificationFailed) {
@@ -599,7 +610,7 @@ function checkClaims(payload: JWTPayload, audiences: string[]): WireWebhookClaim
   const aud = payload.aud;
   const single = Array.isArray(aud) ? (aud.length === 1 ? aud[0] : undefined) : aud;
   if (typeof single !== 'string' || !audiences.includes(single)) {
-    throw new WireWebhookError('INVALID_AUDIENCE', 'Token is not for this app');
+    throw new WireWebhookError('INVALID_AUDIENCE', 'Token is not for this agent');
   }
   const { iat, exp } = payload;
   if (typeof iat !== 'number' || typeof exp !== 'number' || exp <= iat || exp - iat > WIRE_WEBHOOK_TOKEN_LIFETIME_SEC) {

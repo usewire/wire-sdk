@@ -1,5 +1,6 @@
 /**
- * The app side ships as its own subpath, and the root entry does not grow.
+ * The agent side ships as its own subpath (`/agent`, and `/app` under its
+ * pre-0.10 name), and the root entry does not grow.
  * Runs against the built package (dist/), resolved by package name through
  * the exports map exactly as a consumer would.
  */
@@ -13,7 +14,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const dist = join(root, 'dist');
 
 beforeAll(() => {
-  if (!existsSync(join(dist, 'app/index.js'))) {
+  if (!existsSync(join(dist, 'app/index.js')) || !existsSync(join(dist, 'agent/index.js'))) {
     execFileSync('npm', ['run', 'build'], { cwd: root, stdio: 'inherit' });
   }
 }, 120_000);
@@ -46,7 +47,27 @@ function importGraph(entry: string): { files: Set<string>; packages: Set<string>
   return { files, packages };
 }
 
+const AGENT_SIDE = [
+  'WireAgentClient',
+  'WireAgentApiError',
+  'AGENT_API_AUDIENCE',
+  'AGENT_API_BODY_HASH_CLAIM',
+  'AGENT_API_TOKEN_LIFETIME_SEC',
+  'isAgentManagedError',
+  'managedByFromError',
+  'CONTAINER_AGENT_MANAGED',
+  'normalizeRevokedReason',
+];
+const DEPRECATED = ['WireAppClient', 'WireAppApiError', 'APP_API_AUDIENCE', 'APP_API_BODY_HASH_CLAIM', 'APP_API_TOKEN_LIFETIME_SEC', 'CONTAINER_APP_MANAGED'];
+
 describe('package exports', () => {
+  it('@usewire/sdk/agent and @usewire/sdk/app expose the same agent side, new names and deprecated ones', () => {
+    const agent = importByName('@usewire/sdk/agent');
+    const app = importByName('@usewire/sdk/app');
+    expect(agent).toEqual(app);
+    for (const name of [...AGENT_SIDE, ...DEPRECATED]) expect(agent).toContain(name);
+  });
+
   it('@usewire/sdk/app exposes the app side', () => {
     const names = importByName('@usewire/sdk/app');
     for (const name of [
@@ -82,6 +103,9 @@ describe('package exports', () => {
     expect(names).toContain('WireProvisionClient');
     expect(names).not.toContain('defineAction');
     expect(names).not.toContain('WireAppClient');
+    expect(names).not.toContain('WireAgentClient');
+    // The managed-container helpers are small and useful to connect-only agents.
+    expect(names).toContain('isAgentManagedError');
     expect(names).not.toContain('verifyWireWebhook');
     expect(names).not.toContain('verifyWireAction');
   });
@@ -89,6 +113,7 @@ describe('package exports', () => {
   it("the root entry's runtime import graph does not reach the app side", () => {
     const { files, packages } = importGraph(join(dist, 'index.js'));
     expect([...files].some((f) => f.includes(`${join(dist, 'app')}`))).toBe(false);
+    expect([...files].some((f) => f.includes(`${join(dist, 'agent')}`))).toBe(false);
     // Only the one-line validator ref, never the vendored validator itself.
     expect([...files].some((f) => f.endsWith(join('vendor', 'manifest', 'manifest.js')))).toBe(false);
     expect([...packages].filter((p) => !p.startsWith('node:'))).toEqual(['jose']);
@@ -103,9 +128,12 @@ describe('package exports', () => {
     expect(MANIFEST_VALIDATOR_REF).toBe(ref);
   });
 
-  it('declares types for the subpath', () => {
+  it('declares types for the subpaths', () => {
     const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
     expect(pkg.exports['./app'].types).toBe('./dist/app/index.d.ts');
     expect(existsSync(join(root, pkg.exports['./app'].types))).toBe(true);
+    expect(pkg.exports['./agent'].types).toBe('./dist/agent/index.d.ts');
+    expect(existsSync(join(root, pkg.exports['./agent'].types))).toBe(true);
+    expect(pkg.typesVersions['*'].agent).toEqual(['./dist/agent/index.d.ts']);
   });
 });

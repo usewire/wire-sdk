@@ -1,5 +1,5 @@
 /**
- * The Connect app manifest (SUP-946): the container configuration an app
+ * An agent's manifest (SUP-946): the container configuration an agent
  * installs when a user connects it — declared objects, custom tools, the
  * actions those tools call before or after their base tool, instructions and
  * a skill. No secrets.
@@ -25,7 +25,7 @@ export const MANIFEST_VERSION = MANIFEST_FORMAT_VERSION as 1;
 export const MAX_ACTION_TIMEOUT_MS: number = ACTION_TIMEOUT_MAX_MS;
 
 export interface ManifestApp {
-  /** Your app id (lowercase): the agent id you registered with Wire. Also the `aud` of every action call. */
+  /** The manifest id (lowercase): your agent id with `-` as `_`. Also the `aud` of every action call. */
   id: string;
   name: string;
   /** Your manifest version. Re-registering an identical document is a no-op. */
@@ -43,7 +43,7 @@ export interface ManifestObjectField {
 export interface ManifestObject {
   name: string;
   label?: string;
-  /** Always "declared": an app's objects are pinned profiles. */
+  /** Always "declared": an agent's objects are pinned profiles. */
   mode?: 'declared';
   /** Which fields hold coordinates, for a spatial object. */
   geo?: { lat: string; lng: string };
@@ -88,7 +88,7 @@ export interface WireManifest {
   objects?: ManifestObject[];
   actions?: ManifestAction[];
   tools?: ManifestTool[];
-  /** Base tools (e.g. "wire_search") to keep visible to the app's grant beside its own tools. */
+  /** Base tools (e.g. "wire_search") to keep visible to the agent's grant beside its own tools. */
   base_tools?: string[];
   /** Server instructions shown to the connecting agent. */
   instructions?: string;

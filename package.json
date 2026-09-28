@@ -1,6 +1,6 @@
 {
   "name": "@usewire/sdk",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "description": "Connect Wire context containers to your agent, harness, or AI infrastructure.",
   "license": "MIT",
   "author": "Wire (Superloops LLC)",
@@ -31,10 +31,17 @@
       "types": "./dist/app/index.d.ts",
       "import": "./dist/app/index.js"
     },
+    "./agent": {
+      "types": "./dist/agent/index.d.ts",
+      "import": "./dist/agent/index.js"
+    },
     "./package.json": "./package.json"
   },
   "typesVersions": {
     "*": {
+      "agent": [
+        "./dist/agent/index.d.ts"
+      ],
       "app": [
         "./dist/app/index.d.ts"
       ]

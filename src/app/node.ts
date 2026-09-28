@@ -2,7 +2,7 @@
  * Node `http` adapter: serve a WireActionEndpoint or a WireWebhookEndpoint
  * (anything with a Fetch `fetch(request)`) from `http.createServer`,
  * Express, Fastify's raw handler, or anything else that hands you Node's
- * (req, res). No `node:` imports, so the app entry stays runtime-neutral.
+ * (req, res). No `node:` imports, so the agent entry stays runtime-neutral.
  *
  * The body hash is over the exact bytes Wire sent, so this reads the raw
  * stream itself. Mount it BEFORE any body parser (express.json() and friends

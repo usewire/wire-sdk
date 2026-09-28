@@ -1,5 +1,5 @@
 /**
- * Errors thrown by the app side (`@usewire/sdk/app`).
+ * Errors thrown by the agent side (`@usewire/sdk/agent`, also `@usewire/sdk/app`).
  */
 import { WireSdkError } from '../types.js';
 
@@ -19,7 +19,7 @@ export type WireActionAuthErrorCode =
   | 'BAD_SIGNATURE'
   /** `iss` is not "wire". */
   | 'INVALID_ISSUER'
-  /** `aud` is not this app's id. */
+  /** `aud` is not this agent's id. */
   | 'INVALID_AUDIENCE'
   /** `exp` has passed (beyond the clock tolerance). */
   | 'TOKEN_EXPIRED'
@@ -46,7 +46,7 @@ const SERVER_SIDE_CODES: ReadonlySet<WireActionAuthErrorCode> = new Set([
 /**
  * A Wire action call failed verification. `status` is the HTTP status to
  * answer with: 401 for anything the caller got wrong, 413 for an oversized
- * body, 503 when the app itself could not check (JWKS or replay store down).
+ * body, 503 when the agent itself could not check (JWKS or replay store down).
  */
 export class WireActionAuthError extends Error {
   readonly code: WireActionAuthErrorCode;
@@ -110,7 +110,7 @@ export type WireWebhookErrorCode =
   | 'BAD_SIGNATURE'
   /** `iss` is not "wire". */
   | 'INVALID_ISSUER'
-  /** `aud` is not this app's id. */
+  /** `aud` is not this agent's id. */
   | 'INVALID_AUDIENCE'
   /** `exp` has passed (beyond the clock tolerance). */
   | 'TOKEN_EXPIRED'
@@ -134,7 +134,7 @@ export type WireWebhookErrorCode =
   /** The replay store could not record the `jti` or event id. Answer 503: Wire retries. */
   | 'REPLAY_STORE_UNAVAILABLE'
   /**
-   * A genuine event this app has already received (Wire delivers at least
+   * A genuine event this agent has already received (Wire delivers at least
    * once). Not a failure: `status` is 200, so answering with it tells Wire the
    * event is handled and stops its retries.
    */
@@ -181,7 +181,7 @@ export class WireWebhookError extends Error {
 const RETRYABLE_STATUSES: ReadonlySet<number> = new Set([429, 502, 503, 504]);
 
 /**
- * A call to Wire's app API (WireAppClient) failed. `code` is Wire's error code
+ * A call to Wire's agent API (WireAgentClient) failed. `code` is Wire's error code
  * (`NOT_FOUND`, `INVALID_TOKEN`, `TOKEN_EXPIRED`, `REPLAY_DETECTED`,
  * `CREDENTIAL_REVOKED`, `RUNTIME_KEY_REQUIRED`, `UNKNOWN_AGENT`,
  * `AGENT_DISABLED`, `CONTAINER_UNAVAILABLE`, `UNAVAILABLE`, ...), or
@@ -190,19 +190,27 @@ const RETRYABLE_STATUSES: ReadonlySet<number> = new Set([429, 502, 503, 504]);
  * when there was one.
  *
  * `retryable` is true when the same call may succeed if made again: a network
- * error, 429, 502 (for `revokeInstall`: the app's connections were revoked but
+ * error, 429, 502 (for `revokeInstall`: the agent's connections were revoked but
  * the container could not finish the uninstall yet), 503 or 504. Each call
  * signs a fresh token, so retrying is calling the method again.
  */
-export class WireAppApiError extends WireSdkError {
+export class WireAgentApiError extends WireSdkError {
   readonly retryable: boolean;
 
   constructor(code: string, message: string, status?: number, details?: unknown, options?: { cause?: unknown }) {
     super(code, message, status, details);
-    this.name = 'WireAppApiError';
+    this.name = 'WireAgentApiError';
     this.retryable = code === 'NETWORK_ERROR' || (status !== undefined && RETRYABLE_STATUSES.has(status));
     if (options?.cause !== undefined) {
       (this as { cause?: unknown }).cause = options.cause;
     }
   }
 }
+
+/**
+ * @deprecated Use `WireAgentApiError`. The same class: `instanceof` either name
+ * matches the errors WireAgentClient throws.
+ */
+export const WireAppApiError = WireAgentApiError;
+/** @deprecated Use `WireAgentApiError`. */
+export type WireAppApiError = WireAgentApiError;

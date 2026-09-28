@@ -36,7 +36,8 @@ afterEach(() => {
 
 function opts(extra: Partial<VerifyWireActionOptions> = {}): VerifyWireActionOptions {
   return {
-    appId: 'geo_app',
+    // The agent id; Wire signs for its manifest form (geo_app).
+    agentId: 'geo-app',
     action: 'geocode',
     jwksUrl: uniqueUrl(server),
     now: NOW,
@@ -348,8 +349,14 @@ describe('verifyWireAction', () => {
     ).rejects.toThrow(TypeError);
   });
 
-  it('requires appId', async () => {
-    await expect(verifyWireAction(actionRequest('a.b.c', BODY), { appId: '', action: 'geocode' })).rejects.toThrow(/appId/);
+  it('requires agentId', async () => {
+    await expect(verifyWireAction(actionRequest('a.b.c', BODY), { agentId: '', action: 'geocode' })).rejects.toThrow(/agentId/);
+  });
+
+  it('the deprecated appId option (the exact aud) still verifies', async () => {
+    const token = await signAction({ key, body: BODY });
+    const v = await verifyWireAction(actionRequest(token, BODY), opts({ agentId: undefined, appId: 'geo_app' }));
+    expect(v.claims.aud).toBe('geo_app');
   });
 
   it('requires action, since the request path is not signed', async () => {

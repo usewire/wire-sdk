@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.10.0
+
+"App" becomes "agent" (SUP-948). There are no apps: an SDK-built agent may
+bring a manifest, and installing it on a container is an install. Every
+pre-0.10 name keeps working and is marked `@deprecated`, so upgrading breaks
+nothing.
+
+- New entry point `@usewire/sdk/agent`. `@usewire/sdk/app` is the same module
+  and keeps working.
+- `WireAgentClient` replaces `WireAppClient` (deprecated alias, the same
+  class). It takes `{ agentId }` (`appId` still accepted), exposes
+  `client.agentId` (`client.appId` is a deprecated getter), and
+  `listInstalls(agentUserId)`. It now calls
+  `/api/v1/agents/{agentId}/installs/{installId}`,
+  `/api/v1/agents/{agentId}/users/{agentUserId}/installs` and
+  `DELETE /api/v1/agents/{agentId}/installs/{installId}`, signing
+  `aud: "wire-agent-api"`. `apiVersion: 'apps'` selects the deprecated
+  `/api/v1/apps/...` paths and `aud: "wire-app-api"`, for a Wire deployment that
+  has not shipped the agent paths yet.
+- Renamed with deprecated aliases: `WireAppApiError` -> `WireAgentApiError`,
+  `APP_API_AUDIENCE` -> `AGENT_API_AUDIENCE` (the old constant keeps its value,
+  `wire-app-api`), `APP_API_TOKEN_LIFETIME_SEC` -> `AGENT_API_TOKEN_LIFETIME_SEC`,
+  `APP_API_BODY_HASH_CLAIM` -> `AGENT_API_BODY_HASH_CLAIM`,
+  `WireAppClientOptions` -> `WireAgentClientOptions`.
+- `WireInstall.agentUserId`, `Connection.agentUserId` and
+  `StatusSnapshot.connection.agentUserId` carry the pairwise user id
+  (`au_…`, unchanged). `appUserId` stays on each as a deprecated copy of the
+  same value. The SDK reads Wire's `agentUserId` / `agent_user_id` and falls
+  back to `appUserId` / `app_user_id`, and reads `agent_id` / `agent` before
+  `app_id` / `app`, so it works against a server from before or after the
+  rename.
+- The revocation reason `app_disconnected` is now `agent_disconnected`. An
+  older server's `app_disconnected` is mapped to `agent_disconnected` when an
+  install is read; `app_disconnected` stays in `WireInstallRevokedReason` as a
+  deprecated member so existing comparisons compile.
+- `verifyWireAction`, `defineAction`, `verifyWireWebhook` and `defineWebhook`
+  take `agentId`; `appId` is still accepted. For actions, `agentId` is mapped
+  to the manifest id Wire signs for (`geo-app` -> `geo_app`); `appId` is still
+  compared as given.
+- `ManifestRegistration.agentId` beside `appId` (the manifest id).
+- Agent-managed containers: `isAgentManagedError`, `isAgentManagedCode`,
+  `managedByFromError`, `readManagedBy` and the codes `CONTAINER_AGENT_MANAGED`
+  / `CONTAINER_APP_MANAGED`. They recognize both `container_agent_managed` and
+  the older `container_app_managed` (either case), and read `managedBy.agentId`
+  or the older `managedBy.appId`.
+- Verification failures say "not for this agent" instead of "not for this app";
+  error codes are unchanged. Webhook tokens are still `typ: "wire-webhook+jwt"`.
+
 ## 0.9.0
 
 Know your installs without holding a key (SUP-958).

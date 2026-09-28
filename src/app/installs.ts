@@ -1,27 +1,36 @@
 /**
- * An install of a Connect app (SUP-958): one app, one user, one container.
+ * An install of an agent (SUP-958): one agent, one user, one container. An
+ * install is the agent's manifest applied to a container.
  *
- * What Wire lets an app know about its own installs, by two stable ids that
+ * What Wire lets an agent know about its own installs, by two stable ids that
  * grant nothing on their own:
  *
- *   - `installId` (`ins_…`): one per (app, user, container). A reconnect of
+ *   - `installId` (`ins_…`): one per (agent, user, container). A reconnect of
  *     the same user to the same container keeps it.
- *   - `appUserId` (`au_…`): one per (app, user), PAIRWISE (another app gets a
- *     different id for the same person, and it never reveals the Wire user
- *     id). Null while the user is on an unclaimed trial; set on claim.
+ *   - `agentUserId` (`au_…`): one per (agent, user), PAIRWISE (another agent
+ *     gets a different id for the same person, and it never reveals the Wire
+ *     user id). Null while the user is on an unclaimed trial; set on claim.
  *
- * The same shape comes back from WireAppClient and in every install webhook.
- * Wire owns it (wire-platform `apps/server/src/lib/app-installs.ts`,
- * `InstallView`); this module only maps its JSON to typed values.
+ * The same shape comes back from WireAgentClient and in every install webhook.
+ * Wire owns it (wire-platform `InstallView`); this module only maps its JSON
+ * to typed values. It reads both the current field names and the ones Wire
+ * sent before the agent rename (`appUserId`, reason `app_disconnected`), so it
+ * works against either server.
  */
 
 /** Why an install is revoked. */
 export type WireInstallRevokedReason =
-  /** The user disconnected the app (dashboard, or the SDK's disconnect). */
+  /** The user disconnected the agent (dashboard, or the SDK's disconnect). */
   | 'user_disconnected'
-  /** The app's side ended it (credential rotation, the app disabled, a revoked credential). */
+  /** The agent's side ended it (credential rotation, the agent disabled, a revoked credential). */
+  | 'agent_disconnected'
+  /**
+   * @deprecated The pre-0.10 spelling of `agent_disconnected`. The SDK maps it
+   * to `agent_disconnected` when it reads an install, so it never appears on a
+   * WireInstall; kept in the type so older comparisons still compile.
+   */
   | 'app_disconnected'
-  /** The app was uninstalled from the container (by its owner, or by the app's own revokeInstall). */
+  /** The agent was uninstalled from the container (by its owner, or by the agent's own revokeInstall). */
   | 'uninstalled'
   /** The container was deleted (or is in the trash). */
   | 'container_deleted'
@@ -29,9 +38,11 @@ export type WireInstallRevokedReason =
   | 'expired';
 
 export interface WireInstall {
-  /** `ins_…`: one per app, user and container. Not a credential. */
+  /** `ins_…`: one per agent, user and container. Not a credential. */
   installId: string;
-  /** `au_…`: pairwise per app and user. Null while the user is on an unclaimed trial. */
+  /** `au_…`: pairwise per agent and user. Null while the user is on an unclaimed trial. */
+  agentUserId: string | null;
+  /** @deprecated Use `agentUserId` (the same value). */
   appUserId: string | null;
   container: {
     id: string;
@@ -50,7 +61,7 @@ export interface WireInstall {
   /**
    * Where the person creates an account and keeps the trial container. Present
    * only while the install is active and its container is an unclaimed trial.
-   * Not a credential, and it stops working if the app is disconnected or
+   * Not a credential, and it stops working if the agent is disconnected or
    * uninstalled first.
    */
   claimUrl?: string;
@@ -63,7 +74,7 @@ export interface WireInstall {
     /** The last time the install's credential was used. */
     lastUsedAt: Date | null;
   };
-  /** Opens the container's installed apps in the Wire dashboard: link to it from your manage screen. */
+  /** Opens the container's installed agents in the Wire dashboard: link to it from your manage screen. */
   manageUrl: string;
 }
 
@@ -111,9 +122,15 @@ export function installFromWire(raw: unknown): WireInstall {
   if (status !== 'active' && status !== 'revoked') {
     throw new InstallShapeError('install.connection.status is not active or revoked');
   }
+  // `agentUserId` since the agent rename; `appUserId` from a server before it.
+  const agentUserId =
+    raw.agentUserId !== undefined
+      ? strOrNull(raw.agentUserId, 'install.agentUserId')
+      : strOrNull(raw.appUserId, 'install.appUserId');
   const install: WireInstall = {
     installId: str(raw.installId, 'install.installId'),
-    appUserId: strOrNull(raw.appUserId, 'install.appUserId'),
+    agentUserId,
+    appUserId: agentUserId,
     container: {
       id: str(c.id, 'install.container.id'),
       name: strOrNull(c.name, 'install.container.name'),
@@ -130,7 +147,12 @@ export function installFromWire(raw: unknown): WireInstall {
     },
     manageUrl: str(raw.manageUrl, 'install.manageUrl'),
   };
-  if (typeof conn.reason === 'string') install.connection.reason = conn.reason as WireInstallRevokedReason;
+  if (typeof conn.reason === 'string') install.connection.reason = normalizeRevokedReason(conn.reason);
   if (typeof raw.claimUrl === 'string' && raw.claimUrl) install.claimUrl = raw.claimUrl;
   return install;
+}
+
+/** A revocation reason in the current vocabulary: `app_disconnected` (before the agent rename) reads as `agent_disconnected`. */
+export function normalizeRevokedReason(reason: string): WireInstallRevokedReason {
+  return (reason === 'app_disconnected' ? 'agent_disconnected' : reason) as WireInstallRevokedReason;
 }
