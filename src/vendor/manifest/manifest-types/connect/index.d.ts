@@ -4,3 +4,4 @@ export { ACTION_JWT_ISSUER, ACTION_JWT_ALG, ACTION_JWT_TYP, ACTION_JWT_TTL_SECON
 export { addressProblem, isIpLiteral, deniedHostEntry, parseDenyHosts, normalizeHost, ALWAYS_DENIED_HOSTS } from "./address-policy.js";
 export { BUILTIN_TOOL_DEFS } from "../tools/builtin-defs.js";
 export type { ToolDef } from "../tools/tool-def.js";
+export { parseSkill, parseSkillUri, skillUri, instructionsFromSkill, SKILL_FILE, SKILL_URI_SCHEME, SKILLS_EXTENSION, SKILL_NAME_RE, SKILL_NAME_MAX, SKILL_DESCRIPTION_MAX, SKILL_COMPATIBILITY_MAX, SKILL_LICENSE_MAX, SKILL_METADATA_MAX_KEYS, SKILL_METADATA_VALUE_MAX, SKILL_FRONTMATTER_MAX, SKILL_MEDIA_TYPE, type SkillFrontmatter, type SkillParse, } from "./skill.js";

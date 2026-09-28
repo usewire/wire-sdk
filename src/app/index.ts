@@ -37,6 +37,23 @@ export type {
 } from './action.js';
 
 export { defineManifest, MANIFEST_VERSION, MAX_ACTION_TIMEOUT_MS } from './manifest.js';
+/** SUP-962: the manifest's skill (SKILL.md), checked with Wire's own reader. */
+export { defineSkill, skillFrontmatter } from './skill.js';
+export type { SkillInput } from './skill.js';
+export {
+  parseSkill,
+  skillUri,
+  SKILL_NAME_MAX,
+  SKILL_DESCRIPTION_MAX,
+  SKILL_COMPATIBILITY_MAX,
+  SKILL_LICENSE_MAX,
+  SKILL_METADATA_MAX_KEYS,
+  SKILL_METADATA_VALUE_MAX,
+  SKILLS_EXTENSION,
+  INSTRUCTIONS_MAX,
+  SKILL_MAX,
+} from '../vendor/manifest/manifest.js';
+export type { SkillFrontmatter, SkillParse } from '../vendor/manifest/manifest.js';
 /** The engine's manifest validator itself (vendored at MANIFEST_REF), for tooling and CI checks. */
 export { validateManifest } from '../vendor/manifest/manifest.js';
 export type { ConnectManifest, ManifestValidation } from '../vendor/manifest/manifest.js';
