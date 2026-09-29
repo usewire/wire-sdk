@@ -1,13 +1,13 @@
 import type { App as McpApp, McpUiHostContext } from "@modelcontextprotocol/ext-apps";
 import { applyDocumentTheme, useApp, useHostStyles } from "@modelcontextprotocol/ext-apps/react";
-import { Crosshair, ExternalLink, MapPin, MessageSquare } from "lucide-react";
+import { Crosshair, ExternalLink, Link2, MapPin, MessageSquare } from "lucide-react";
 import * as maplibregl from "maplibre-gl";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Map, MapControls, MapMarker, MapPopup, MarkerContent, useMap } from "@/components/ui/map";
 import { cn } from "@/lib/utils";
 import { connectDiagnostics, report } from "./diagnostics";
 import type { WorkerMode } from "./maplibre-worker";
-import { readPlaces, type Place, type PlacesView } from "./places";
+import { matchReason, readPlaces, type Place, type PlacesView } from "./places";
 
 /** OpenFreeMap: free, no key, commercial use allowed, and every request (style, tiles,
  *  sprites, glyphs) goes to one origin, https://tiles.openfreemap.org. */
@@ -267,6 +267,7 @@ function PlacesMap({
                   {p.distanceKm !== null && <span className="text-muted-foreground shrink-0 text-xs tabular-nums">{formatDistance(p.distanceKm)}</span>}
                 </span>
                 {(p.address || p.area) && <span className="text-muted-foreground block truncate text-xs">{p.address ?? p.area}</span>}
+                <MatchedVia place={p} compact />
                 {p.tags.length > 0 && <Tags tags={p.tags} max={4} className="mt-1" />}
               </span>
             </button>
@@ -296,6 +297,21 @@ function Pin({ n, active, label }: { n: number; active: boolean; label: string }
   );
 }
 
+/** Why a place is here when it was found through a linked note, visit or event (`matchedVia`). */
+function MatchedVia({ place, compact }: { place: Place; compact?: boolean }) {
+  const reason = matchReason(place);
+  if (!reason) return null;
+  return (
+    <span className={cn("text-muted-foreground flex items-start gap-1 text-xs leading-snug", compact ? "mt-0.5" : "")}>
+      <Link2 className="mt-0.5 size-3 shrink-0" aria-hidden />
+      <span className={compact ? "line-clamp-1" : ""}>
+        {reason.text}
+        {reason.more > 0 && <span className="whitespace-nowrap"> · +{reason.more} more</span>}
+      </span>
+    </span>
+  );
+}
+
 function Tags({ tags, max, className }: { tags: string[]; max?: number; className?: string }) {
   const shown = max ? tags.slice(0, max) : tags;
   const rest = tags.length - shown.length;
@@ -318,6 +334,7 @@ function PlaceDetails({ place, onAsk, onOpenMap }: { place: Place; onAsk?: () =>
       {place.address && <p className="text-muted-foreground text-xs leading-snug">{place.address}</p>}
       {place.area && <p className="text-muted-foreground text-xs leading-snug">{place.area}</p>}
       {place.distanceKm !== null && <p className="text-muted-foreground text-xs">{formatDistance(place.distanceKm)} away</p>}
+      <MatchedVia place={place} />
       {place.tags.length > 0 && <Tags tags={place.tags} />}
       {(onAsk || onOpenMap) && (
         <div className="flex gap-1.5 pt-1">

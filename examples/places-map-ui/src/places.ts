@@ -36,6 +36,21 @@ export interface Place {
   area: string | null;
   tags: string[];
   distanceKm: number | null;
+  /** The linked records this place was found through (wire_search `matchLinked`, usewire/wire#128),
+   *  best first. Empty when it matched on its own. */
+  matchedVia: MatchedVia[];
+}
+
+/** One entry of a match's `matchedVia`: a linked record (a note, a visit, an event) whose own
+ *  match lifted this place into the results. */
+export interface MatchedVia {
+  id: string | null;
+  /** The linked record's object ("note", "visit", "event"), when it is a record. */
+  object: string | null;
+  /** The link's type ("about", "visited", "held_at"). */
+  type: string | null;
+  content: string;
+  fields: Record<string, unknown> | null;
 }
 
 export interface PlacesView {
@@ -170,7 +185,54 @@ export function readPlace(raw: unknown, index: number): Place | null {
     area: area && area !== address ? area : null,
     tags: [...new Set(strList(tagSource))],
     distanceKm: distanceKm !== null && distanceKm >= 0 ? distanceKm : null,
+    matchedVia: readMatchedVia(m.matchedVia),
   };
+}
+
+function readMatchedVia(raw: unknown): MatchedVia[] {
+  if (!Array.isArray(raw)) return [];
+  const out: MatchedVia[] = [];
+  for (const v of raw) {
+    if (!isObj(v)) continue;
+    const fields = isObj(v.fields) ? v.fields : null;
+    const content = str(v.content) ?? "";
+    if (!content && !fields) continue;
+    out.push({ id: str(v.id), object: str(v.object)?.toLowerCase() ?? null, type: str(v.type), content, fields });
+  }
+  return out;
+}
+
+const QUOTE_MAX = 90;
+const quote = (s: string) => {
+  const t = s.replace(/\s+/g, " ").trim();
+  return `“${t.length > QUOTE_MAX ? `${t.slice(0, QUOTE_MAX - 1).trimEnd()}…` : t}”`;
+};
+
+/** Why a place is in the results when it was found through a linked record, in words, for the
+ *  first (best) `matchedVia` entry: "Matched your note: “best cortado in town”". `more` counts
+ *  the rest. Null when the place matched on its own. Wording follows Someday's objects (note,
+ *  visit, event) and falls back to the object or link type for anything else. */
+export function matchReason(place: Place): { text: string; more: number } | null {
+  const [first, ...rest] = place.matchedVia;
+  if (!first) return null;
+  const f = first.fields ?? {};
+  const kind = first.object ?? first.type ?? "";
+  let text: string;
+  if (kind === "note" || first.type === "about") {
+    // Someday writes a note's content as "Note on <place>: <text>"; the text field is the note itself.
+    const body = str(f.text) ?? first.content.replace(/^Note on [^:]*:\s*/i, "");
+    text = `Matched your note: ${quote(body)}`;
+  } else if (kind === "visit" || first.type === "visited") {
+    const on = str(f.visited_on);
+    text = on ? `Matched your visit on ${on}` : `Matched your visit: ${quote(first.content)}`;
+  } else if (kind === "event" || first.type === "held_at") {
+    const title = str(f.title);
+    const when = str(f.starts_at);
+    text = title ? `Matched the event ${quote(title)}${when ? `, ${when.replace("T", " ")}` : ""}` : `Matched an event: ${quote(first.content)}`;
+  } else {
+    text = `Matched a linked ${kind || "record"}: ${quote(first.content)}`;
+  }
+  return { text, more: rest.length };
 }
 
 /** The payload object of a tool result: structuredContent, else the first text block that

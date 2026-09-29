@@ -45,11 +45,17 @@ country. Tags come from top-level `tags`, then `provenance.tags`. It also accept
 writes (`name\naddress\narea\nlat <lat>, lng <lng>`); `LEGACY_MATCHES=1 npm run dev:server` serves
 that shape. A match with no usable coordinates is skipped and counted, never pinned at 0,0.
 
+When the search uses `matchLinked` (usewire/wire#128), a place found through a linked record
+carries `matchedVia: [{ id, object, type, score, content, fields? }]`, best first. The view says
+why, from the first entry: "Matched your note: “best cortado in town”", "Matched your visit on
+2026-09-20", "Matched the event “…”". It adds "+N more" when several records matched.
+
 ## What it does
 
 Fits the map to every place. Each place gets a numbered pin, the search `center` gets a ring, and
 the list sits under the map. Clicking a list row flies to the place; clicking a pin pans to it.
-Either opens a popup with name, address, area, distance and tags. The popup has two buttons, each
+Either opens a popup with name, address, area, distance, why it matched (when it was found through
+a linked record) and tags. The list row shows why it matched too. The popup has two buttons, each
 shown only when the host declares the capability: **Tell me more** (`ui/message`) and **Maps**
 (`ui/open-link`). The page follows the host's theme (`data-theme`), style variables and fonts. It
 fills a fixed-height container, or reports its own height.
@@ -105,8 +111,9 @@ Wire serves it at `ui://<app id>/places-map`. Keep the tool's text result (`pres
 
 ## Test it locally
 
-`dev-server/` is a stand-in for Someday on Wire. It exposes `search_places` over five NYC places,
-in the engine's exact match shape, and serves the built HTML as `ui://someday/places-map`.
+`dev-server/` is a stand-in for Someday on Wire. It exposes `search_places` over six NYC places
+and their notes and visits, in the engine's exact match shape, and serves the built HTML as
+`ui://someday/places-map`. Search `"cortado"` to get a place found only through its note.
 
 ```bash
 npm run build && npm run dev:server              # http://localhost:3001/mcp

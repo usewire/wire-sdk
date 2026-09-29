@@ -15,7 +15,7 @@ import { McpServer } from "@modelcontextprotocol/server";
 import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
 import { registerAppResource, registerAppTool, RESOURCE_MIME_TYPE } from "@modelcontextprotocol/ext-apps/server";
 import { z } from "zod";
-import { SAMPLE_PLACES } from "./sample-places.mjs";
+import { SAMPLE_LINKED, SAMPLE_PLACES } from "./sample-places.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const dist = path.join(here, "..", "dist");
@@ -35,7 +35,7 @@ function haversineKm(a, b) {
  *  `fields` for a declared-object record, coordinates first; `content` is what Someday's
  *  save_place wrote; tags under provenance. LEGACY_MATCHES=1 serves the pre-#126 shape (no
  *  `fields`), which exercises the view's content-scrape fallback. */
-function toMatch(p, center, score) {
+function toMatch(p, center, score, via) {
   const distance = haversineKm(center, p.fields);
   const { lat, lng, ...rest } = p.fields;
   return {
@@ -43,21 +43,34 @@ function toMatch(p, center, score) {
     score: Number(score.toFixed(4)),
     content: `${p.fields.name}\n${p.fields.address}\n${[p.fields.locality, p.fields.region, p.fields.country].join(", ")}\nlat ${lat}, lng ${lng}`,
     source: "app:someday",
+    object: "place",
     distance_km: Number(distance.toFixed(3)),
     ...(process.env.LEGACY_MATCHES ? {} : { fields: { lat, lng, ...rest } }),
+    // usewire/wire#128: the linked records that lifted this place, best first (at most 5).
+    ...(via.length ? { matchedVia: via.slice(0, 5).map((v) => ({ id: v.id, object: v.object, type: v.type, score: v.score, content: v.content, fields: v.fields })) } : {}),
     provenance: { source: "app:someday", ingestedAt: p.ingestedAt, tags: p.tags, contentType: "text/plain" },
     _meta: { wire: { navigate: { entryId: p.id, relationships: 0 } } },
   };
 }
 
+/** A small imitation of wire_search over object "place" with `near` and, like Someday's
+ *  search_places, `matchLinked: { objects: ["note", "visit", "event"] }`: a query term found in a
+ *  linked note or visit lifts its place into the results and is listed in `matchedVia`. */
 function searchPlaces({ query, lat, lng, radius_km, limit = 10 }) {
   const center = { lat, lng };
   const q = (query ?? "").trim().toLowerCase();
   const terms = q ? q.split(/\s+/) : [];
+  const hitsIn = (text) => terms.filter((t) => text.toLowerCase().includes(t)).length;
   const scored = SAMPLE_PLACES.map((p) => {
-    const hay = `${p.fields.name} ${p.fields.address} ${p.tags.join(" ")}`.toLowerCase();
-    const hits = terms.filter((t) => hay.includes(t)).length;
-    return { p, hits, km: haversineKm(center, p.fields) };
+    const direct = hitsIn(`${p.fields.name} ${p.fields.address} ${p.tags.join(" ")}`);
+    const via = terms.length
+      ? SAMPLE_LINKED.filter((l) => l.place === p.id)
+          .map((l) => ({ ...l, hits: hitsIn(l.content) }))
+          .filter((l) => l.hits > 0)
+          .map((l) => ({ ...l, score: Number((0.5 + 0.1 * l.hits).toFixed(4)) }))
+          .sort((a, b) => b.score - a.score)
+      : [];
+    return { p, hits: Math.max(direct, via[0]?.hits ?? 0), via, km: haversineKm(center, p.fields) };
   })
     .filter((s) => (terms.length ? s.hits > 0 : true))
     .filter((s) => (radius_km ? s.km <= radius_km : true))
@@ -66,7 +79,7 @@ function searchPlaces({ query, lat, lng, radius_km, limit = 10 }) {
   return {
     presentation: "map",
     center,
-    matches: scored.map((s, i) => toMatch(s.p, center, 1 / (1 + i * 0.15 + s.km / 50))),
+    matches: scored.map((s, i) => toMatch(s.p, center, 1 / (1 + i * 0.15 + s.km / 50), s.via)),
   };
 }
 
@@ -81,7 +94,7 @@ function buildServer() {
       description:
         'Find saved places near a point, optionally matching a query. Results carry presentation "map": pin each match (coordinates are at the end of its content) around center.',
       inputSchema: z.object({
-        query: z.string().max(500).optional().describe("What to look for. Omit to list the nearest saved places."),
+        query: z.string().max(500).optional().describe("What to look for; also matched against the user's notes and visits. Omit to list the nearest saved places."),
         lat: z.number().min(-90).max(90).default(40.7359).describe("Latitude of the point to search around."),
         lng: z.number().min(-180).max(180).default(-73.9911).describe("Longitude of the point to search around."),
         radius_km: z.number().positive().max(20000).optional(),
