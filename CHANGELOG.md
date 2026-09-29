@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.14.1
+
+- Vendors the manifest validator at usewire/wire@25f3ecb (usewire/wire#127). In
+  relationships mode, `wire_navigate` now returns the anchor `entry` and the
+  `linked` records themselves, newest first, not only the edges. It takes two
+  new arguments that a manifest tool may fix or fill:
+  - `direction`: `'incoming'` (records whose links point at this one),
+    `'outgoing'` or `'both'` (the default).
+  - `limit`: the most linked records to return, 1-200 (default 50).
+
+  A place's history, for example:
+  `{ name: 'wire_navigate', args: { entryId: '{{input.place_id}}', mode: 'relationships', type: ['about', 'visited', 'held_at'], direction: 'incoming' } }`.
+
 ## 0.14.0
 
 Interactive views (MCP Apps, SUP-953). A manifest can ship HTML views that
