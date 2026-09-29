@@ -80,6 +80,60 @@ export interface ManifestTool {
   tool: { name: string; args: Record<string, unknown> };
   after?: ManifestActionStep;
   result?: Record<string, unknown>;
+  /**
+   * The interactive view that renders this tool's result in hosts that support
+   * MCP Apps (SUP-953): `resource` names an entry of the manifest's `ui`. The
+   * tool is listed with `_meta.ui.resourceUri` = `ui://<app id>/<resource>`; a
+   * host without MCP Apps shows the tool's normal result, so keep that result
+   * complete on its own.
+   */
+  ui?: ManifestToolUi;
+}
+
+/** A tool's view: which `ui` entry renders its result, and who may call the tool. */
+export interface ManifestToolUi {
+  /** The `name` of one of the manifest's `ui` entries. */
+  resource: string;
+  /** Who may call the tool: the model, the rendered view (`app`), or both (the default). */
+  visibility?: ('model' | 'app')[];
+}
+
+/** Origins a view may reach, per CSP list. Each entry is an https origin (`https://host[:port]`,
+ *  one leading `*.` label at most), never Wire's own domain. */
+export interface ManifestUiCsp {
+  /** fetch / XHR / WebSocket (CSP `connect-src`). */
+  connectDomains?: string[];
+  /** Scripts, stylesheets, images, fonts, media (CSP `script-src`, `style-src`, `img-src`, ...). */
+  resourceDomains?: string[];
+  /** Nested iframes (CSP `frame-src`). */
+  frameDomains?: string[];
+  /** Allowed `<base>` URIs (CSP `base-uri`). */
+  baseUriDomains?: string[];
+}
+
+/** Browser permissions a view requests; each is `{}` when requested. */
+export interface ManifestUiPermissions {
+  camera?: Record<string, never>;
+  microphone?: Record<string, never>;
+  geolocation?: Record<string, never>;
+  clipboardWrite?: Record<string, never>;
+}
+
+/**
+ * An interactive view (MCP Apps, `io.modelcontextprotocol/ui`): one HTML
+ * document a host renders in a sandboxed iframe for the tools that name it.
+ * Wire serves it at `ui://<app id>/<name>` as `text/html;profile=mcp-app`.
+ */
+export interface ManifestUi {
+  /** Lowercase letters, digits and hyphens (1-64); the last segment of the view's `ui://` URI. */
+  name: string;
+  title?: string;
+  /** The whole HTML document, inline (at most 512 KB). Load heavy libraries from an origin in `csp.resourceDomains`. */
+  html: string;
+  csp?: ManifestUiCsp;
+  permissions?: ManifestUiPermissions;
+  /** Ask the host to draw a border around the view. */
+  prefersBorder?: boolean;
 }
 
 export interface WireManifest {
@@ -104,6 +158,13 @@ export interface WireManifest {
    * skill and no `instructions`, connecting clients are pointed at the skill.
    */
   skill?: string;
+  /**
+   * Interactive views (MCP Apps, SUP-953): HTML documents hosts that support
+   * MCP Apps render for the tools whose `ui.resource` names them. At most 8,
+   * names unique, 1 MB of HTML in total. Shown to the user at consent, with
+   * every origin each view may reach.
+   */
+  ui?: ManifestUi[];
 }
 
 /** A manifest that passed defineManifest(). */

@@ -88,6 +88,12 @@ describe('package exports', () => {
       'skillFrontmatter',
       'parseSkill',
       'skillUri',
+      // SUP-953
+      'UI_MIME_TYPE',
+      'UI_EXTENSION',
+      'UI_HTML_MAX_BYTES',
+      'uiUri',
+      'uiDomainProblem',
       // SUP-958
       'WireAppClient',
       'WireAppApiError',

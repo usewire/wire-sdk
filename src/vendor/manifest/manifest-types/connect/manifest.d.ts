@@ -1,8 +1,12 @@
 import type { ToolDef } from "../tools/tool-def.js";
 import { type BaseToolLookup, type CustomToolDataFlow, type CustomToolDefinition, type ToolCapability, type ValidationError } from "../tools/custom.js";
 import { type GeoFields } from "../geo-fields.js";
+import { type ManifestToolUi, type UiResource, type UiVisibility } from "./ui.js";
 export declare const MANIFEST_FORMAT_VERSION = 1;
+/** The manifest without its UI resources' `html`, as JSON bytes: every other field's budget. */
 export declare const MANIFEST_MAX_BYTES: number;
+/** The whole manifest, UI included, as JSON bytes (SUP-953). */
+export declare const MANIFEST_MAX_TOTAL_BYTES: number;
 export declare const APP_NAME_MAX = 200;
 export declare const APP_VERSION_RE: RegExp;
 export declare const MAX_MANIFEST_OBJECTS = 50;
@@ -67,6 +71,8 @@ export type ManifestTool = CustomToolDefinition & {
     enabled?: boolean;
     /** On which transports. Each defaults to true. */
     transports?: ManifestToolTransports;
+    /** Which of the manifest's UI resources renders the tool's result, and who may call it (SUP-953). */
+    ui?: ManifestToolUi;
 };
 /** The analysis graphs an app needs (SUP-954). Each defaults to false. */
 export interface ManifestAnalysis {
@@ -124,6 +130,7 @@ export interface ConnectManifest {
     analysis?: ManifestAnalysis;
     instructions?: string;
     skill?: string;
+    ui?: UiResource[];
 }
 /** One validated tool, with what the validator derived about it. */
 export interface ValidatedManifestTool {
@@ -136,6 +143,13 @@ export interface ValidatedManifestTool {
     capabilities: ToolCapability[];
     /** The visibility the manifest asks for, defaults filled (SUP-954). */
     visibility: ToolVisibility;
+    /** The UI resource that renders the tool's result (SUP-953): its name, its `ui://` URI, and who
+     *  may call the tool, defaults filled (both). Absent for a tool without a UI. */
+    ui?: {
+        resource: string;
+        uri: string;
+        visibility: UiVisibility[];
+    };
 }
 /** A manifest's `analysis`, with both keys filled (absent = false). */
 export declare function requestedAnalysis(m: Pick<ConnectManifest, "analysis"> | null | undefined): RequestedAnalysis;
