@@ -367,6 +367,59 @@ passes. Given a string instead, it checks a `SKILL.md` you wrote. It throws
 errors instead, for a CI check. `defineManifest` runs the same check on the
 manifest's `skill`.
 
+### Interactive views (MCP Apps)
+
+A tool can render its result as an interactive view in clients that support
+[MCP Apps](https://github.com/modelcontextprotocol/ext-apps)
+(`io.modelcontextprotocol/ui`). The manifest carries each view as one HTML
+document in `ui`, and a tool names the view that renders it:
+
+```ts
+import html from './ui/places-map.html'; // bundled as text
+import csp from './ui/csp.json';
+
+const manifest = defineManifest({
+  manifest: 1,
+  app: { id: 'someday', name: 'Someday', version: '1.1.0' },
+  ui: [{ name: 'places-map', title: 'Places map', html, csp }],
+  tools: [
+    {
+      name: 'search_places',
+      // ...description, inputSchema, tool, result as before
+      ui: { resource: 'places-map' },
+    },
+  ],
+});
+```
+
+Wire serves the view at `ui://<app id>/<name>` as `text/html;profile=mcp-app`
+(`UI_MIME_TYPE`), with its CSP in `_meta.ui.csp`, and lists the tool with
+`_meta.ui.resourceUri` pointing at it. The host renders the view in a sandboxed
+iframe and sends it the tool's input and result.
+
+- **`html`** is the whole document, inline, at most 512 KB
+  (`UI_HTML_MAX_BYTES`). All views together may hold 1 MB, and a manifest may
+  have up to 8. The HTML is part of what the user approves at consent, so load
+  heavy libraries from a CDN rather than inlining them.
+- **`csp`** lists every origin the view may reach: `connectDomains` (fetch,
+  XHR, WebSocket), `resourceDomains` (scripts, styles, images, fonts),
+  `frameDomains` and `baseUriDomains`. Each entry is an https origin
+  (`https://host[:port]`, at most one leading `*.`), never Wire's own domain.
+  `uiDomainProblem(origin)` applies the same rule. `blob:` and `data:` can't be
+  declared. Many hosts don't allow `blob:` workers, so a library that starts
+  one needs a fallback.
+- **`permissions`** requests `camera`, `microphone`, `geolocation` or
+  `clipboardWrite`, each as `{}`. **`prefersBorder`** asks the host for a
+  border.
+- A tool's **`ui.visibility`** says who may call it: `['model']`, `['app']` (the
+  view only), or both (the default).
+- A client without MCP Apps shows only the tool's normal result. Keep that
+  result complete on its own.
+
+[`examples/places-map-ui`](examples/places-map-ui) is a complete view built
+with Vite, mapcn and the ext-apps SDK: a single 337 KB HTML file, its
+`csp.json`, and a local MCP server to test it in the ext-apps basic-host.
+
 ### Register it
 
 Registration is signed with one of your agent's **publisher keys**, an Ed25519

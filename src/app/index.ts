@@ -67,8 +67,27 @@ export type {
   ManifestObject,
   ManifestObjectField,
   ManifestTool,
+  ManifestToolUi,
+  ManifestUi,
+  ManifestUiCsp,
+  ManifestUiPermissions,
   WireManifest,
 } from './manifest.js';
+/** SUP-953: interactive views (MCP Apps), with the engine's own limits and CSP-origin rule. */
+export {
+  UI_EXTENSION,
+  UI_MIME_TYPE,
+  UI_URI_SCHEME,
+  UI_NAME_MAX,
+  UI_TITLE_MAX,
+  UI_HTML_MAX_BYTES,
+  UI_TOTAL_HTML_MAX_BYTES,
+  UI_MAX_RESOURCES,
+  UI_CSP_DOMAINS_MAX,
+  uiUri,
+  uiDomainProblem,
+} from '../vendor/manifest/manifest.js';
+export type { UiResource } from '../vendor/manifest/manifest.js';
 
 export {
   verifyWireAction,

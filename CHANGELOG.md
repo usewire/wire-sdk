@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.14.0
+
+Interactive views (MCP Apps, SUP-953). A manifest can ship HTML views that
+clients supporting MCP Apps (`io.modelcontextprotocol/ui`) render for a tool's
+result.
+
+- Vendors the manifest validator at usewire/wire@744815c (usewire/wire#126).
+  `defineManifest` accepts and checks:
+  - `ui?: ManifestUi[]`: `{ name, title?, html, csp?, permissions?,
+    prefersBorder? }`, at most 8 views, each `html` at most 512 KB and 1 MB in
+    total. `csp` holds `connectDomains`, `resourceDomains`, `frameDomains` and
+    `baseUriDomains`, each a list of https origins (never Wire's own domain).
+    `permissions` holds `camera`, `microphone`, `geolocation` and
+    `clipboardWrite`, each `{}`.
+  - `ManifestTool.ui?: { resource, visibility? }`: the view that renders the
+    tool's result, by name, and who may call the tool (`'model'`, `'app'`).
+    Only tools take it, not actions.
+- New types `ManifestUi`, `ManifestUiCsp`, `ManifestUiPermissions` and
+  `ManifestToolUi`. New exports from the engine: `UI_MIME_TYPE`,
+  `UI_EXTENSION`, `UI_URI_SCHEME`, the limits (`UI_HTML_MAX_BYTES`,
+  `UI_TOTAL_HTML_MAX_BYTES`, `UI_MAX_RESOURCES`, `UI_NAME_MAX`,
+  `UI_TITLE_MAX`, `UI_CSP_DOMAINS_MAX`), `uiUri(appId, name)` and
+  `uiDomainProblem(origin)`.
+- README: "Interactive views (MCP Apps)". `examples/places-map-ui` (PR #16) is
+  a complete view: saved places on a map, one HTML file plus its CSP.
+
 ## 0.13.0
 
 Update available (SUP-948). Registering a new manifest version never updates an
