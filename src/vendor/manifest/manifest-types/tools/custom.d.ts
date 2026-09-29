@@ -1,4 +1,4 @@
-import type { ToolDef } from "./tool-def.js";
+import { type ToolAnnotations, type ToolDef } from "./tool-def.js";
 /** Name rule: the object-name rule (identifier-ish, starts with a letter), capped at 64 — the
  *  longest tool name every major model API accepts. */
 export declare const CUSTOM_TOOL_NAME_RE: RegExp;
@@ -60,8 +60,12 @@ export interface CustomToolDefinition {
         name: string;
         args: Record<string, unknown>;
     };
-    /** Optional result mapping (a JSON object template). Absent = the base result, unchanged. */
+    /** Optional result mapping (a JSON object template). Absent = the base result, unchanged. A
+     *  top-level `_meta` key maps VIEW-ONLY data (SUP-953): see VIEW_META_KEY. */
     result?: Record<string, unknown>;
+    /** Optional JSON Schema of the tool's result data (SUP-953), checked on every call. Absent: the
+     *  base tool's, when the tool passes the base result through unchanged (customToolOutputSchema). */
+    outputSchema?: Record<string, unknown>;
     /** App tools only (SUP-946): an action run before the base tool. Its output is `{{before.x}}`. */
     before?: ActionStep;
     /** App tools only (SUP-946): an action run after the base tool. Its output is `{{after.x}}`. */
@@ -148,6 +152,23 @@ export declare function validateCustomToolDefinition(raw: unknown, lookup: BaseT
 } | {
     ok: false;
     errors: ValidationError[];
+};
+/** The top-level `result` key whose mapped object is VIEW-ONLY data: it goes to the MCP result's
+ *  `_meta.view` (an MCP Apps host hands the whole result, `_meta` included, to the tool's view)
+ *  and never into `structuredContent` or `content`, so the model never reads it. */
+export declare const VIEW_META_KEY = "_meta";
+/** A manifest's annotation overrides for one tool (SUP-953): any of the three hints, and a title. */
+export type ToolAnnotationsOverride = Partial<ToolAnnotations>;
+/** A custom tool's annotations: its base tool's; open-world when it calls an app's action (an
+ *  HTTPS service outside the container); then the manifest's overrides, if any. */
+export declare function customToolAnnotations(base: Pick<ToolDef, "annotations" | "mutates">, def: Pick<CustomToolDefinition, "before" | "after">, override?: ToolAnnotationsOverride): ToolAnnotations;
+/** The output schema a custom tool declares: its own; else its base tool's when it hands the base
+ *  result back unchanged (no `result` mapping, no action); else none. */
+export declare function customToolOutputSchema(base: Pick<ToolDef, "outputSchema">, def: Pick<CustomToolDefinition, "outputSchema" | "result" | "before" | "after">): Record<string, unknown> | undefined;
+/** Split a mapped result into what the caller (and the model) sees and the view-only `_meta`. */
+export declare function splitViewMeta(data: unknown): {
+    data: unknown;
+    view?: Record<string, unknown>;
 };
 /** What a custom tool USES, as a closed vocabulary a consent screen can put in plain words
  *  (SUP-954). Derived from the base tool and the computed data flow, never declared by the author,

@@ -94,6 +94,9 @@ describe('package exports', () => {
       'UI_HTML_MAX_BYTES',
       'uiUri',
       'uiDomainProblem',
+      'uiResourceHash',
+      'parseUiUri',
+      'VIEW_META_KEY',
       // SUP-958
       'WireAppClient',
       'WireAppApiError',

@@ -23,7 +23,9 @@ The build fails if the HTML is over Wire's per-UI cap (512 KB). It is about 337 
 
 ## What it reads
 
-The tool result, as `structuredContent` or as JSON in a text block (Wire's `tools/call` sends both):
+Either of two results: a `render_places_map` result (wire_query rows, see
+[In a Wire manifest](#in-a-wire-manifest)) or a `search_places` result. Either arrives as
+`structuredContent` or as JSON in a text block (Wire's `tools/call` sends both). The search result:
 
 ```json
 { "presentation": "map", "center": { "lat": 40.7359, "lng": -73.9911 }, "matches": [ ... ] }
@@ -99,21 +101,59 @@ out of reach, so this is how you debug a blank map.
 
 ## In a Wire manifest
 
-See `manifest-snippet.ts`:
+The recommended shape splits finding from showing: `search_places` has **no** view, and a
+separate `render_places_map` shows the places the model picked. The model reads the search
+results and decides what's worth a map, so a map doesn't pop up on every search. See
+`manifest-snippet.ts` for the whole thing, checked against the engine's validator:
 
 ```ts
-ui: [{ name: 'places-map', title: 'Places map', html: placesMapHtml, csp }],
-tools: [{ name: 'search_places', /* ...unchanged... */ ui: { resource: 'places-map' } }],
+ui: [{ name: 'places-map', title: 'Places map', html, csp }],
+tools: [
+  { name: 'search_places', /* ...as today, no ui... */ },
+  {
+    name: 'render_places_map',
+    inputSchema: { type: 'object', properties: {
+      place_ids: { type: 'array', items: { type: 'string', minLength: 1 }, minItems: 1, maxItems: 50 },
+      title: { type: 'string', maxLength: 80 },
+      center: { type: 'object', properties: { lat: { type: 'number' }, lng: { type: 'number' } }, required: ['lat', 'lng'] },
+    }, required: ['place_ids'] },
+    tool: { name: 'wire_query', args: {
+      sql: "SELECT p._entry_id AS id, p.name, p.lat, p.lng, p.address, p.locality FROM json_each(?1, '$.ids') AS ids JOIN place AS p ON p._entry_id = ids.value ORDER BY ids.key",
+      params: ['{"ids":{{input.place_ids}}}'],
+    } },
+    result: { presentation: 'map', columns: '{{tool.columns}}', rows: '{{tool.rows}}', truncated: '{{tool.truncated}}',
+              _meta: { title: '{{input.title}}', center: '{{input.center}}' } },
+    annotations: { title: 'Show places on a map' },
+    ui: { resource: 'places-map' },
+  },
+],
 ```
 
-Wire serves it at `ui://<app id>/places-map`. Keep the tool's text result (`presentation: "map"` +
-`matches`). A host without MCP Apps support shows only that.
+Some details:
+
+- **The param.** wire_query params must be scalars, and a whole-value `'{{input.place_ids}}'`
+  keeps its array type, so the validator refuses it. Embedded in a string, the array becomes
+  its JSON: `'{"ids":{{input.place_ids}}}'` binds `{"ids":["…","…"]}`, and `json_each(?1,
+  '$.ids')` reads it. The ids are bound as a value, never spliced into SQL. Joining on
+  `json_each` keeps the model's order, so pin numbers follow the list the model gives.
+- **`_meta`** in `result` is view-only. Wire returns it as the MCP result's `_meta.view`: the
+  view uses `title` as its heading and `center` as the search point, and the model never sees it.
+- **The view reads both shapes.** A `render_places_map` result has wire_query's
+  `{ columns, rows: [[…]] }`, zipped into records by column. A `search_places` result has
+  `matches`. Keeping `ui` on `search_places` still works if you prefer one tool.
+- **Hashed URI.** Wire serves the view at `ui://<app id>/places-map-<hash>`, where the hash is the
+  first 8 hex digits of the HTML's SHA-256, so a host never renders a cached old version after
+  an upgrade. A host without MCP Apps shows the tool's normal result. Keep that complete on its own.
 
 ## Test it locally
 
-`dev-server/` is a stand-in for Someday on Wire. It exposes `search_places` over six NYC places
-and their notes and visits, in the engine's exact match shape, and serves the built HTML as
-`ui://someday/places-map`. Search `"cortado"` to get a place found only through its note.
+`dev-server/` is a stand-in for Someday on Wire, serving the built HTML at its hashed
+`ui://someday/places-map-<hash>`. It has two tools:
+
+- `render_places_map` runs the recommended SQL above in a real SQLite over the sample places, and
+  returns `_meta.view`.
+- `search_places` covers six NYC places and their notes and visits, in the engine's exact match
+  shape. Search `"cortado"` to get a place found only through its note.
 
 ```bash
 npm run build && npm run dev:server              # http://localhost:3001/mcp

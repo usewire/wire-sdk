@@ -5,6 +5,8 @@ export declare const UI_EXTENSION = "io.modelcontextprotocol/ui";
 export declare const UI_MIME_TYPE = "text/html;profile=mcp-app";
 /** The URI scheme UI resources are served under. */
 export declare const UI_URI_SCHEME = "ui://";
+/** Hex digits of the HTML's SHA-256 a view's URI carries (see uiUri). */
+export declare const UI_HASH_LEN = 8;
 /** A UI resource's name: the skill-name grammar (1-64 lowercase ASCII letters and digits in
  *  hyphen-separated runs), so it is always a valid URI path segment. */
 export declare const UI_NAME_RE: RegExp;
@@ -57,15 +59,25 @@ export interface UiResourceMeta {
     permissions?: UiPermissions;
     prefersBorder?: boolean;
 }
-/** `ui://<app id>/<name>`: the URI a resource is served at. Namespaced by the app, so a container's
- *  UI can later hold resources from more than one source without a name ever meaning two things. */
-export declare function uiUri(appId: string, name: string): string;
-/** Read a `ui://<app id>/<name>` URI into its parts, or null when it is not one this engine could
- *  serve (exactly two segments, each in its grammar; a query, fragment, percent-escape, backslash,
- *  whitespace or trailing slash is refused rather than normalized). */
+/** The hash a view's URI carries: the first UI_HASH_LEN hex digits of its HTML's SHA-256. */
+export declare function uiResourceHash(html: string): string;
+/**
+ * `ui://<app id>/<name>-<hash>`: the URI a resource is served at. Namespaced by the app, so a
+ * container's UI can later hold resources from more than one source without a name ever meaning
+ * two things. HASHED: `hash` is `uiResourceHash(html)`, so a host that caches a view by URI (the
+ * spec invites prefetching and caching) can never render an old version after an upgrade: a
+ * changed view is a new URI, and the old one is no longer served. The manifest's `name` never
+ * carries the hash.
+ */
+export declare function uiUri(appId: string, name: string, hash: string): string;
+/** Read a `ui://<app id>/<name>-<hash>` URI into its parts, or null when it is not one this engine
+ *  could serve (exactly two segments, each in its grammar, the last ending in `-` and UI_HASH_LEN
+ *  lowercase hex digits; a query, fragment, percent-escape, backslash, whitespace or trailing slash
+ *  is refused rather than normalized). */
 export declare function parseUiUri(uri: unknown): {
     appId: string;
     name: string;
+    hash: string;
 } | null;
 /**
  * Why a CSP entry is refused, or null when it is allowed. THE rule for every `csp` list, in the
@@ -98,9 +110,9 @@ export declare function parseToolUi(raw: unknown, path: string, resourceNames: R
 /** A resource's `_meta.ui`: its CSP, permissions and border preference, only the keys it has. The
  *  same object on its `resources/list` entry and its `resources/read` content. */
 export declare function uiResourceMeta(r: UiResource): UiResourceMeta;
-/** A tool's `_meta.ui` for `tools/list`: the resource's URI, and `visibility` only when the manifest
- *  stated it (a host defaults it to both). */
-export declare function toolUiMeta(appId: string, ui: ManifestToolUi): ToolUiMeta;
+/** A tool's `_meta.ui` for `tools/list`: the resource's (hashed) URI, and `visibility` only when the
+ *  manifest stated it (a host defaults it to both). `hash` is the resource's `uiResourceHash`. */
+export declare function toolUiMeta(appId: string, ui: ManifestToolUi, hash: string): ToolUiMeta;
 /** Every CSP entry of a resource, per list, each list complete (empty when not declared). */
 export declare function uiCspLists(r: Pick<UiResource, "csp">): Record<UiCspKey, string[]>;
 /** The permissions a resource requests, by name, in the fixed order. */

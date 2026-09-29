@@ -79,15 +79,44 @@ export interface ManifestTool {
   before?: ManifestActionStep;
   tool: { name: string; args: Record<string, unknown> };
   after?: ManifestActionStep;
-  result?: Record<string, unknown>;
+  /**
+   * The result mapping (a JSON object template). Absent: the base tool's result,
+   * unchanged. A top-level `_meta` key (`VIEW_META_KEY`) maps VIEW-ONLY data:
+   * it goes to the MCP result's `_meta.view`, where an MCP Apps view reads it,
+   * and never into `structuredContent` or `content`, so the model never sees it.
+   */
+  result?: Record<string, unknown> & { _meta?: Record<string, unknown> };
+  /**
+   * JSON Schema of the tool's result data, checked on every call and listed as
+   * the tool's `outputSchema`. Absent: the base tool's, when the tool hands the
+   * base result back unchanged (no `result` mapping, no action); else none.
+   */
+  outputSchema?: JsonSchema;
+  /**
+   * Overrides of the MCP annotations the tool is listed with. The rest are
+   * inherited from the base tool (and `openWorldHint` is true when the tool
+   * calls an action). An override may only make the tool look MORE cautious:
+   * `readOnlyHint: true` is refused on a tool that writes, and
+   * `destructiveHint: false` on one that deletes.
+   */
+  annotations?: ManifestToolAnnotations;
   /**
    * The interactive view that renders this tool's result in hosts that support
    * MCP Apps (SUP-953): `resource` names an entry of the manifest's `ui`. The
-   * tool is listed with `_meta.ui.resourceUri` = `ui://<app id>/<resource>`; a
-   * host without MCP Apps shows the tool's normal result, so keep that result
-   * complete on its own.
+   * tool is listed with `_meta.ui.resourceUri` =
+   * `ui://<app id>/<resource>-<hash>` (see `uiUri`); a host without MCP Apps
+   * shows the tool's normal result, so keep that result complete on its own.
    */
   ui?: ManifestToolUi;
+}
+
+/** A tool's MCP annotation overrides (hints a host uses to decide when to ask the user first). */
+export interface ManifestToolAnnotations {
+  /** Display name (at most 120 characters). */
+  title?: string;
+  readOnlyHint?: boolean;
+  destructiveHint?: boolean;
+  openWorldHint?: boolean;
 }
 
 /** A tool's view: which `ui` entry renders its result, and who may call the tool. */
@@ -122,10 +151,10 @@ export interface ManifestUiPermissions {
 /**
  * An interactive view (MCP Apps, `io.modelcontextprotocol/ui`): one HTML
  * document a host renders in a sandboxed iframe for the tools that name it.
- * Wire serves it at `ui://<app id>/<name>` as `text/html;profile=mcp-app`.
+ * Wire serves it at `ui://<app id>/<name>-<hash>` (`uiUri`) as `text/html;profile=mcp-app`.
  */
 export interface ManifestUi {
-  /** Lowercase letters, digits and hyphens (1-64); the last segment of the view's `ui://` URI. */
+  /** Lowercase letters, digits and hyphens (1-64); the last segment of the view's `ui://` URI, before its hash. */
   name: string;
   title?: string;
   /** The whole HTML document, inline (at most 512 KB). Load heavy libraries from an origin in `csp.resourceDomains`. */

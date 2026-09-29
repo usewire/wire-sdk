@@ -1,5 +1,5 @@
-import type { ToolDef } from "../tools/tool-def.js";
-import { type BaseToolLookup, type CustomToolDataFlow, type CustomToolDefinition, type ToolCapability, type ValidationError } from "../tools/custom.js";
+import type { ToolAnnotations, ToolDef } from "../tools/tool-def.js";
+import { type BaseToolLookup, type CustomToolDataFlow, type CustomToolDefinition, type ToolAnnotationsOverride, type ToolCapability, type ValidationError } from "../tools/custom.js";
 import { type GeoFields } from "../geo-fields.js";
 import { type ManifestToolUi, type UiResource, type UiVisibility } from "./ui.js";
 export declare const MANIFEST_FORMAT_VERSION = 1;
@@ -73,7 +73,13 @@ export type ManifestTool = CustomToolDefinition & {
     transports?: ManifestToolTransports;
     /** Which of the manifest's UI resources renders the tool's result, and who may call it (SUP-953). */
     ui?: ManifestToolUi;
+    /** Overrides of the tool's MCP annotations (SUP-953); the rest are inherited (see
+     *  customToolAnnotations). An override may only make a hint MORE cautious. */
+    annotations?: ToolAnnotationsOverride;
 };
+/** Annotation override keys, and a title's ceiling. */
+export declare const TOOL_ANNOTATION_KEYS: readonly ["title", "readOnlyHint", "destructiveHint", "openWorldHint"];
+export declare const TOOL_TITLE_MAX = 120;
 /** The analysis graphs an app needs (SUP-954). Each defaults to false. */
 export interface ManifestAnalysis {
     /** The provenance graph (corroborates / elaborates / supersedes / contradicts). */
@@ -150,6 +156,10 @@ export interface ValidatedManifestTool {
         uri: string;
         visibility: UiVisibility[];
     };
+    /** The MCP annotations the tool is listed with (SUP-953): inherited, action-derived, overridden. */
+    annotations: ToolAnnotations;
+    /** The output schema the tool is listed with (SUP-953), when it has one. */
+    outputSchema?: Record<string, unknown>;
 }
 /** A manifest's `analysis`, with both keys filled (absent = false). */
 export declare function requestedAnalysis(m: Pick<ConnectManifest, "analysis"> | null | undefined): RequestedAnalysis;

@@ -1,5 +1,54 @@
 # Changelog
 
+## 0.15.0
+
+Tool annotations, output schemas, view-only results and hashed view URIs
+(SUP-953). Vendors the manifest validator at usewire/wire@027a1cf
+(usewire/wire#129).
+
+**Breaking: view URIs carry a hash.** Wire serves a view at
+`ui://<app id>/<name>-<hash>`, where `hash` is the first 8 hex digits of the
+HTML's SHA-256, so a host that caches views by URI never renders an old one
+after an upgrade. The helpers change with it:
+
+- `uiUri(appId, name)` → `uiUri(appId, name, hash)`, with
+  `hash = uiResourceHash(html)`.
+- `parseUiUri(uri)` now returns `{ appId, name, hash }`, and returns null for an
+  unhashed `ui://<app id>/<name>`.
+
+Migration: build a URI with `uiUri(appId, name, uiResourceHash(html))`. Don't
+hard-code `ui://…/<name>`: read the tool's `_meta.ui.resourceUri` from
+`tools/list`. A manifest's `ui[].name` and a tool's `ui.resource` are
+unchanged: the hash is never part of the name.
+
+Everything else is additive:
+
+- **`ManifestTool.annotations?: { title?, readOnlyHint?, destructiveHint?, openWorldHint? }`.**
+  A custom tool inherits its base tool's annotations, and `openWorldHint` is
+  true when it calls an action. A manifest may override them **only toward
+  caution**: `readOnlyHint: true` is refused on a tool that writes (e.g. over
+  `wire_write`), and `destructiveHint: false` on one that deletes (over
+  `wire_delete`). Marking a tool less read-only, more destructive or
+  open-world is always accepted, and so is a `title` (at most 120 characters).
+- **`ManifestTool.outputSchema?`**: the JSON Schema of the tool's result data,
+  checked on every call and listed on the tool. Without one, a tool that
+  returns its base tool's result unchanged (no `result` mapping, no action)
+  inherits the base tool's schema.
+- **`result._meta`**: a top-level `_meta` in a result mapping is view-only data.
+  Wire returns it as the MCP result's `_meta.view`, never in
+  `structuredContent` or `content`, so the model never reads it.
+- New exports: `uiResourceHash`, `parseUiUri`, `UI_HASH_LEN`,
+  `sha256HexSync`, `VIEW_META_KEY`, `TOOL_ANNOTATION_KEYS`, `TOOL_TITLE_MAX`,
+  and the types `ManifestToolAnnotations` and `ToolAnnotations`.
+- `examples/places-map-ui` renders a `render_places_map` result: wire_query's
+  `{ columns, rows }`, plus `_meta.view` `{ title, center }`. Its
+  `manifest-snippet.ts` and README show the recommended split: `search_places`
+  without a view, and `render_places_map { place_ids }` over `wire_query`. The
+  ids are bound as one JSON text param, `'{"ids":{{input.place_ids}}}'` with
+  `json_each(?1, '$.ids')`, because wire_query params are scalars and a
+  whole-value array substitution is refused. The dev server serves the view at
+  its hashed URI and runs that SQL.
+
 ## 0.14.2
 
 - Vendors the manifest validator at usewire/wire@0d73867 (usewire/wire#128).

@@ -67,6 +67,7 @@ export type {
   ManifestObject,
   ManifestObjectField,
   ManifestTool,
+  ManifestToolAnnotations,
   ManifestToolUi,
   ManifestUi,
   ManifestUiCsp,
@@ -84,10 +85,18 @@ export {
   UI_TOTAL_HTML_MAX_BYTES,
   UI_MAX_RESOURCES,
   UI_CSP_DOMAINS_MAX,
+  UI_HASH_LEN,
   uiUri,
+  parseUiUri,
+  uiResourceHash,
   uiDomainProblem,
+  sha256HexSync,
+  /** SUP-953 (usewire/wire#129): the `result` key whose object reaches the view only (`_meta.view`). */
+  VIEW_META_KEY,
+  TOOL_ANNOTATION_KEYS,
+  TOOL_TITLE_MAX,
 } from '../vendor/manifest/manifest.js';
-export type { UiResource } from '../vendor/manifest/manifest.js';
+export type { UiResource, ToolAnnotations } from '../vendor/manifest/manifest.js';
 
 export {
   verifyWireAction,
