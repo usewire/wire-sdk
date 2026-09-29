@@ -4,16 +4,34 @@ Apply from the basic-host directory:  patch -p1 < <this file>
 - STRICT_SPEC_CSP=1 serves the sandbox with the spec's reference CSP (no blob:, no 'unsafe-eval',
   no worker-src) instead of basic-host's permissive one, so the main-thread worker fallback is
   exercised.
+- CHATGPT_CSP=1 serves ChatGPT's widget policy as observed: `worker-src blob:` only, script-src
+  with the declared resourceDomains and blob:, connect-src with the connectDomains only.
 - Advertises the `message` host capability (basic-host handles ui/message but does not declare
   it, so the view hides its "Tell me more" button there).
 - Logs app log messages as JSON, so the view's diagnostics are readable in the host console.
 
 --- a/serve.ts
 +++ b/serve.ts
-@@ -71,6 +71,23 @@
+@@ -71,6 +71,39 @@
    const baseUriDomains =
      sanitizeCspDomains(csp?.baseUriDomains).join(" ") || null;
  
++  // CHATGPT_CSP=1: ChatGPT's widget policy as observed (2026-09): workers from blob: only, scripts
++  // from the declared resourceDomains and blob:, no 'self' in connect-src.
++  if (process.env.CHATGPT_CSP) {
++    return [
++      "default-src 'none'",
++      "worker-src blob:",
++      `script-src 'self' 'unsafe-inline' ${resourceDomains} blob:`,
++      `style-src 'self' 'unsafe-inline' ${resourceDomains}`,
++      `connect-src ${connectDomains || "'none'"}`,
++      `img-src data: blob: ${connectDomains} ${resourceDomains}`,
++      `font-src ${resourceDomains || "'none'"}`,
++      "frame-src 'none'",
++      "object-src 'none'",
++    ].join("; ");
++  }
++
 +  // STRICT_SPEC_CSP=1: the MCP Apps spec's reference CSP (2026-01-26, "CSP Construction from
 +  // Metadata"), verbatim: no blob:, no 'unsafe-eval', no worker-src.
 +  if (process.env.STRICT_SPEC_CSP) {

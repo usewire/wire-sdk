@@ -5,11 +5,12 @@ import { configureMapLibreWorkers } from "./maplibre-worker";
 import { PlacesMapApp } from "./App";
 import "./index.css";
 
-// Decide where MapLibre's worker runs before any map exists (see maplibre-worker.ts).
-const workerMode = await configureMapLibreWorkers();
+// Decide where MapLibre's worker runs (see maplibre-worker.ts). The page connects to the host and
+// renders the list at once; only the map itself waits for this.
+const workerReady = configureMapLibreWorkers();
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <PlacesMapApp workerMode={workerMode} />
+    <PlacesMapApp workerReady={workerReady} />
   </StrictMode>,
 );

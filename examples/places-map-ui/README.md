@@ -86,18 +86,32 @@ out of reach, so this is how you debug a blank map.
   from one origin. mapcn defaults to CARTO basemaps. To use those instead, pass mapcn's default
   `styles` and set `connectDomains` to `https://basemaps.cartocdn.com` and
   `https://*.basemaps.cartocdn.com`. Mind CARTO's terms for commercial use.
-- **The tile worker.** MapLibre parses tiles in a module Web Worker. A worker can't be started from a
-  cross-origin URL, so MapLibre starts it from a `blob:` URL. That needs `worker-src blob:`, which
-  some hosts allow (basic-host does). The spec's reference CSP doesn't, and a Wire manifest's
-  `csp` can only add https origins. `src/maplibre-worker.ts` probes once at startup. If blob
-  workers are refused, it swaps in an in-thread stand-in. That stand-in runs the same
-  `maplibre-gl-worker.mjs`, imported from jsDelivr on the main thread, over a `MessageChannel`.
-  The map works under either CSP. Under the strict one, tile parsing runs on the main thread,
-  which is fine for a page of places.
+- **The tile worker.** MapLibre parses tiles in a module Web Worker, `maplibre-gl-worker.mjs`,
+  loaded here from jsDelivr. Hosts differ, and `src/maplibre-worker.ts` handles all three:
+  - A worker can't start from a cross-origin URL at all.
+  - **ChatGPT** allows `worker-src blob:` and nothing else. A blob: worker starts, but a *static*
+    `import` inside a module worker is fetched as part of the worker's script graph, so it is
+    checked against `worker-src` too, and jsDelivr is refused. That is MapLibre's own blob
+    wrapper, and in ChatGPT the pins rendered but tiles never loaded: "Creating a worker from
+    'https://cdn.jsdelivr.net/…/maplibre-gl-worker.mjs' violates … worker-src blob:" / "Worker
+    failed to load".
+  - The spec's reference CSP allows no blob: workers, and a Wire manifest's `csp` can only add
+    https origins.
+
+  The fix: MapLibre is pointed at the page's own blob: wrapper (`setWorkerUrl`). The wrapper
+  loads the worker with a *dynamic* `import()`, which is fetched as a script and checked
+  against `script-src`, where `resourceDomains` puts jsDelivr. It holds MapLibre's first
+  messages until the worker module is listening. Before the first map, the page probes that
+  exact path: a worker from the same wrapper that reports once the module has loaded, with an
+  8 s timeout. If anything fails, `Worker` is swapped for an in-thread stand-in running the same
+  module on the main thread over a `MessageChannel`. The list renders at once, and only the map
+  waits for the probe. Tested under basic-host's default CSP (worker), ChatGPT's (worker) and
+  the spec's (main thread).
 - **zod's JIT** probes `new Function` on first parse, which is a CSP violation without
   `'unsafe-eval'`. The page sets `jitless: true`, so no probe runs.
-- The worker module that a real (blob) worker imports is fetched without SRI, because import maps
-  don't apply inside workers. It is the same pinned, immutable jsDelivr version.
+- The worker module that a real (blob) worker imports is fetched without SRI. Import maps don't
+  apply inside workers, and `import()` takes no integrity. It is the same pinned, immutable
+  jsDelivr version, and the main-thread path does check it through the import map.
 
 ## In a Wire manifest
 
@@ -161,7 +175,7 @@ npm run build && npm run dev:server              # http://localhost:3001/mcp
 git clone https://github.com/modelcontextprotocol/ext-apps && cd ext-apps/examples/basic-host
 patch -p1 < <this dir>/dev-server/basic-host.patch   # optional: strict CSP, message capability
 npm install && npm run build
-bun serve.ts                                      # or STRICT_SPEC_CSP=1 bun serve.ts
+bun serve.ts                                      # or STRICT_SPEC_CSP=1 / CHATGPT_CSP=1 bun serve.ts
 # open http://localhost:8080, pick someday-dev / search_places, Call Tool
 ```
 
