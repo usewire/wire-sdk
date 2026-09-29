@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.14.2
+
+- Vendors the manifest validator at usewire/wire@0d73867 (usewire/wire#128).
+  `wire_search` has two new abilities, and a manifest tool may fix or fill both:
+  - `object` accepts a list (1-20 names), and every record match carries its
+    `object`.
+  - `matchLinked: { objects, types?, direction? }`: the same query also ranks
+    records of `objects`, and each hit lifts the records it is linked to. A
+    place is found through its note "best cortado in town". A lifted result
+    still has to pass `object` and `near`. It lists the records that lifted it
+    in `matchedVia: [{ id, object, type, score, content, fields? }]`, best
+    first. `direction` is `'incoming'` (the default), `'outgoing'` or `'both'`.
+
+  Someday-style tools:
+
+  ```ts
+  // Places, found by name or by what the user wrote about them.
+  {
+    name: 'search_places',
+    // ...
+    tool: {
+      name: 'wire_search',
+      args: {
+        object: 'place',
+        query: '{{input.query}}',
+        near: { lat: '{{input.lat}}', lng: '{{input.lng}}', radius_km: '{{input.radius_km}}' },
+        matchLinked: { objects: ['note', 'visit', 'event'] },
+      },
+    },
+  }
+
+  // Everything the user saved, one search across objects.
+  {
+    name: 'search_saved',
+    // ...
+    tool: {
+      name: 'wire_search',
+      args: { object: ['place', 'note', 'visit', 'event'], query: '{{input.query}}' },
+    },
+  }
+  ```
+
+- `examples/places-map-ui` shows why a place matched when it has `matchedVia`,
+  in its list row and popup: "Matched your note: “best cortado in town”", with
+  "+N more" when several records matched. The wording follows the object
+  (note, visit, event). The dev server's sample data has a place found only
+  through its note (search "cortado").
+
 ## 0.14.1
 
 - Vendors the manifest validator at usewire/wire@25f3ecb (usewire/wire#127). In
