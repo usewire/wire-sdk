@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.15.1
+
+- `examples/places-map-ui`: map tiles now load in ChatGPT, whose widget CSP is
+  `worker-src blob:` only. Before this, the pins rendered but the tiles never
+  loaded ("Worker failed to load").
+  - Cause: MapLibre's worker wrapper uses a static `import` from jsDelivr
+    inside the worker, which is checked against `worker-src` and refused.
+  - Fix: the view starts the worker from its own blob: wrapper, which loads it
+    with a dynamic `import()`. That is checked against `script-src`, where
+    `resourceDomains` puts jsDelivr.
+  - The view now probes that exact path before the first map, and falls back
+    to running the worker on the main thread if it fails for any reason.
+  - The dev server's basic-host patch gains `CHATGPT_CSP=1`. No SDK code
+    changed, and `csp.json` is unchanged.
+
 ## 0.15.0
 
 Tool annotations, output schemas, view-only results and hashed view URIs

@@ -43,7 +43,16 @@ function resultErrorText(result: { content?: unknown }): string {
   return "The tool returned an error.";
 }
 
-export function PlacesMapApp({ workerMode }: { workerMode: WorkerMode }) {
+export function PlacesMapApp({ workerReady }: { workerReady: Promise<{ mode: WorkerMode; why?: string }> }) {
+  const [worker, setWorker] = useState<{ mode: WorkerMode; why?: string } | null>(null);
+  useEffect(() => {
+    let live = true;
+    void workerReady.then((w) => live && setWorker(w));
+    return () => {
+      live = false;
+    };
+  }, [workerReady]);
+  const workerMode = worker?.mode ?? null;
   const [view, setView] = useState<PlacesView | null>(null);
   const [status, setStatus] = useState<Status>({ kind: "connecting" });
   const [hostContext, setHostContext] = useState<McpUiHostContext | undefined>();
@@ -74,10 +83,13 @@ export function PlacesMapApp({ workerMode }: { workerMode: WorkerMode }) {
   useEffect(() => {
     if (!app) return;
     connectDiagnostics(app);
-    report("info", { workerMode });
     setHostContext(app.getHostContext());
     setStatus((s) => (s.kind === "connecting" ? { kind: "waiting", query: null } : s));
-  }, [app, workerMode]);
+  }, [app]);
+  useEffect(() => {
+    // Buffered until the host connection is up (diagnostics.ts).
+    if (worker) report("info", { workerMode: worker.mode, ...(worker.why ? { why: worker.why } : {}) });
+  }, [worker]);
 
   // Theme, host CSS variables and fonts (data-theme on <html>, which mapcn also watches).
   useHostStyles(app, app?.getHostContext());
@@ -132,7 +144,8 @@ function PlacesMap({
   app: McpApp | null;
   view: PlacesView;
   hostContext?: McpUiHostContext;
-  workerMode: WorkerMode;
+  /** Null until maplibre-worker.ts has decided; the map waits, nothing else does. */
+  workerMode: WorkerMode | null;
 }) {
   const { places, center } = view;
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -187,6 +200,12 @@ function PlacesMap({
         className="border-border relative overflow-hidden rounded-lg border"
         style={fixedHeight ? { flex: "1 1 60%", minHeight: 180 } : { height: mapHeight }}
       >
+        {!workerMode ? (
+          // MapLibre's worker path is still being checked (maplibre-worker.ts); the list is live.
+          <div className="bg-muted/40 flex h-full items-center justify-center">
+            <span className="bg-pin size-2 animate-pulse rounded-full" />
+          </div>
+        ) : (
         <Map styles={MAP_STYLES} attributionControl={false} dragRotate={false} center={[places[0]!.lng, places[0]!.lat]} zoom={12}>
           <FitToPlaces places={places} nonce={fitNonce} />
           <ReportMapErrors />
@@ -234,6 +253,7 @@ function PlacesMap({
             </button>
           )}
         </Map>
+        )}
       </div>
 
       <div className="text-muted-foreground flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 px-0.5 text-xs">
