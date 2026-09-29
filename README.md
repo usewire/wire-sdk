@@ -392,10 +392,13 @@ const manifest = defineManifest({
 });
 ```
 
-Wire serves the view at `ui://<app id>/<name>` as `text/html;profile=mcp-app`
-(`UI_MIME_TYPE`), with its CSP in `_meta.ui.csp`, and lists the tool with
-`_meta.ui.resourceUri` pointing at it. The host renders the view in a sandboxed
-iframe and sends it the tool's input and result.
+Wire serves the view at a hashed URI, `ui://<app id>/<name>-<hash>`, as
+`text/html;profile=mcp-app` (`UI_MIME_TYPE`), with its CSP in `_meta.ui.csp`.
+The hash is `uiResourceHash(html)`, the first 8 hex digits of the HTML's
+SHA-256, and `uiUri(appId, name, hash)` builds the URI. A changed view is a new
+URI, so a host that caches views never renders an old one after an upgrade.
+The tool is listed with `_meta.ui.resourceUri` pointing at it. The host renders
+the view in a sandboxed iframe and sends it the tool's input and result.
 
 - **`html`** is the whole document, inline, at most 512 KB
   (`UI_HTML_MAX_BYTES`). All views together may hold 1 MB, and a manifest may
@@ -415,10 +418,41 @@ iframe and sends it the tool's input and result.
   view only), or both (the default).
 - A client without MCP Apps shows only the tool's normal result. Keep that
   result complete on its own.
+- **View-only data.** A top-level `_meta` in a tool's `result` mapping
+  (`VIEW_META_KEY`) goes to the MCP result's `_meta.view`, never into
+  `structuredContent` or `content`. The view reads it and the model never sees
+  it. Use it for a heading, a map center, display hints.
+- **Split finding from showing.** Give the search tool no view, and add a small
+  render tool that takes the ids the model picked. The model reads the results
+  first, and the user gets one map of what matters, not one per search.
 
 [`examples/places-map-ui`](examples/places-map-ui) is a complete view built
-with Vite, mapcn and the ext-apps SDK: a single 337 KB HTML file, its
-`csp.json`, and a local MCP server to test it in the ext-apps basic-host.
+with Vite, mapcn and the ext-apps SDK: a single ~340 KB HTML file, its
+`csp.json`, and a local MCP server to test it in the ext-apps basic-host. Its
+`manifest-snippet.ts` has a `render_places_map` tool over `wire_query` that
+binds a list of ids as one JSON param.
+
+### Tool annotations and output schemas
+
+Every tool is listed with MCP annotations (`readOnlyHint`, `destructiveHint`,
+`openWorldHint`, `title`). Hosts use them to decide when to ask the user
+before a call. A custom tool inherits its base tool's hints, and
+`openWorldHint` becomes true when it calls one of your actions.
+`annotations` overrides them, **but only toward caution**:
+
+- `readOnlyHint: true` is refused on a tool that writes.
+- `destructiveHint: false` is refused on one that deletes.
+- Declaring a read-only tool not read-only, or any tool open-world, is fine.
+- `title` is always allowed (at most 120 characters).
+
+```ts
+{ name: 'forget_place', /* ...wire_delete... */ annotations: { title: 'Forget a place' } }
+```
+
+`outputSchema` declares the JSON Schema of the tool's result data. It is
+checked on every call and listed on the tool. Without one, a tool that passes
+its base tool's result through unchanged (no `result` mapping, no action)
+inherits the base tool's schema.
 
 ### Register it
 

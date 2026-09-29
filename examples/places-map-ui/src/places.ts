@@ -21,6 +21,12 @@
 //
 // A match without usable coordinates is skipped and counted, never placed at (0, 0).
 //
+// THE OTHER SHAPE, the data/render split (usewire/wire#129): a `render_places_map` tool over
+// wire_query, whose result is `{ columns: [...], rows: [[...], ...], rowCount, truncated }` (rows
+// are arrays, one value per column), optionally wrapped with `presentation`, plus view-only
+// `_meta.view` ({ title?, center? }) the model never sees. Rows are zipped with `columns` into
+// records and read exactly like matches (`id` or `_entry_id`, lat, lng, name, address, ...).
+//
 // The result may arrive as `structuredContent` or as JSON in a text content block; both are
 // read. Nothing here trusts a string to be HTML: every value is rendered as text by React.
 
@@ -61,6 +67,10 @@ export interface PlacesView {
   skipped: number;
   /** True when the result named `presentation: "map"`. */
   presentationMap: boolean;
+  /** A heading the tool passed for the view only (`_meta.view.title`), if any. */
+  title: string | null;
+  /** The producer cut the rows short (wire_query's `truncated`). */
+  truncated: boolean;
 }
 
 type Obj = Record<string, unknown>;
@@ -172,7 +182,7 @@ export function readPlace(raw: unknown, index: number): Place | null {
   const area = areaParts.length ? [...new Set(areaParts)].join(", ") : (lines[2] ?? null);
 
   const tagSource = m.tags ?? provenance?.tags ?? firstOf(sources.filter((s) => s !== m), ["tags"]);
-  const entryId = str(m.id) ?? str(m.entryId) ?? str(m.entry_id) ?? str(m.place_id) ?? str(place?.id);
+  const entryId = str(m.id) ?? str(m.entryId) ?? str(m.entry_id) ?? str(m._entry_id) ?? str(m.place_id) ?? str(place?.id);
   const distanceKm = num(m.distance_km ?? m.distanceKm);
 
   return {
@@ -273,9 +283,33 @@ function rowsOf(payload: unknown): { rows: unknown[]; env: Obj | null } {
   return { rows: [], env: payload };
 }
 
+/** wire_query's rows are arrays, one value per `columns` entry; turn them into objects so a row
+ *  reads like any other record. Rows that are already objects pass through. */
+function rowObjects(rows: unknown[], columns: unknown): unknown[] {
+  if (!Array.isArray(columns) || !columns.every((c) => typeof c === "string")) return rows;
+  return rows.map((r) => (Array.isArray(r) ? Object.fromEntries((columns as string[]).map((c, i) => [c, r[i]])) : r));
+}
+
+/** The view-only data a Wire custom tool mapped under `result._meta` (usewire/wire#129): the MCP
+ *  result's `_meta.view`, which the model never sees. */
+function viewMetaOf(result: unknown): Obj | null {
+  if (!isObj(result) || !isObj(result._meta)) return null;
+  return isObj(result._meta.view) ? result._meta.view : null;
+}
+
+function readCenter(c: unknown): { lat: number; lng: number } | null {
+  if (!isObj(c)) return null;
+  const lat = num(c.lat ?? c.latitude);
+  const lng = num(c.lng ?? c.lon ?? c.longitude);
+  return validLat(lat) && validLng(lng) ? { lat, lng } : null;
+}
+
 export function readPlaces(result: unknown): PlacesView {
   const payload = payloadOf(result);
-  const { rows, env } = rowsOf(payload);
+  const found = rowsOf(payload);
+  const env = found.env;
+  const rows = rowObjects(found.rows, env?.columns);
+  const view = viewMetaOf(result);
   const places: Place[] = [];
   const seen = new Set<string>();
   let skipped = 0;
@@ -289,15 +323,14 @@ export function readPlaces(result: unknown): PlacesView {
     seen.add(p.id);
     places.push(p);
   });
-  const c = env && isObj(env.center) ? env.center : null;
-  const cLat = c ? num(c.lat ?? c.latitude) : null;
-  const cLng = c ? num(c.lng ?? c.lon ?? c.longitude) : null;
   const top = isObj(payload) ? payload : null;
   return {
     places,
-    center: validLat(cLat) && validLng(cLng) ? { lat: cLat, lng: cLng } : null,
+    center: readCenter(view?.center) ?? readCenter(env?.center),
     query: str(env?.query) ?? str(top?.query),
     skipped,
     presentationMap: (env?.presentation ?? top?.presentation) === "map",
+    title: str(view?.title),
+    truncated: env?.truncated === true || top?.truncated === true,
   };
 }

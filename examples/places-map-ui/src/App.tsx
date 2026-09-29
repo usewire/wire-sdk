@@ -238,8 +238,10 @@ function PlacesMap({
 
       <div className="text-muted-foreground flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 px-0.5 text-xs">
         <span>
+          {view.title ? <span className="text-foreground font-medium">{view.title} · </span> : null}
           {places.length} saved place{places.length === 1 ? "" : "s"}
           {view.query ? <> for “{view.query}”</> : null}
+          {view.truncated ? " (more not shown)" : ""}
           {view.skipped ? ` · ${view.skipped} without coordinates` : ""}
         </span>
         <Attribution onOpen={caps?.openLinks ? openLink : undefined} />
