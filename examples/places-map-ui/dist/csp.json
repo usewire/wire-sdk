@@ -1,0 +1,8 @@
+{
+  "connectDomains": [
+    "https://tiles.openfreemap.org"
+  ],
+  "resourceDomains": [
+    "https://cdn.jsdelivr.net"
+  ]
+}

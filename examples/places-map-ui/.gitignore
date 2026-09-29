@@ -1,0 +1,3 @@
+# The built view is committed so the exact bytes (and CSP) under review are the ones an agent
+# ships. Regenerate with `npm run build`.
+!dist/
