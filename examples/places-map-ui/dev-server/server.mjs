@@ -31,17 +31,21 @@ function haversineKm(a, b) {
   return 2 * 6371.0088 * Math.asin(Math.sqrt(h));
 }
 
-/** What wire_search returns for one place record: the engine's match shape, verbatim. The record's
- *  fields are NOT on the match; content is what Someday's save_place wrote. */
+/** What wire_search returns for one place record, in the engine's match shape (usewire/wire#126):
+ *  `fields` for a declared-object record, coordinates first; `content` is what Someday's
+ *  save_place wrote; tags under provenance. LEGACY_MATCHES=1 serves the pre-#126 shape (no
+ *  `fields`), which exercises the view's content-scrape fallback. */
 function toMatch(p, center, score) {
   const distance = haversineKm(center, p.fields);
+  const { lat, lng, ...rest } = p.fields;
   return {
     id: p.id,
     score: Number(score.toFixed(4)),
-    content: `${p.fields.name}\n${p.fields.address}\n${[p.fields.locality, p.fields.region, p.fields.country].join(", ")}\nlat ${p.fields.lat}, lng ${p.fields.lng}`,
-    source: "someday",
+    content: `${p.fields.name}\n${p.fields.address}\n${[p.fields.locality, p.fields.region, p.fields.country].join(", ")}\nlat ${lat}, lng ${lng}`,
+    source: "app:someday",
     distance_km: Number(distance.toFixed(3)),
-    provenance: { source: "someday", ingestedAt: p.ingestedAt, tags: p.tags, contentType: "text/plain" },
+    ...(process.env.LEGACY_MATCHES ? {} : { fields: { lat, lng, ...rest } }),
+    provenance: { source: "app:someday", ingestedAt: p.ingestedAt, tags: p.tags, contentType: "text/plain" },
     _meta: { wire: { navigate: { entryId: p.id, relationships: 0 } } },
   };
 }

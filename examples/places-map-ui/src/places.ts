@@ -5,20 +5,21 @@
 //
 //   { "presentation": "map", "center": { "lat", "lng" }, "matches": [ <wire_search match> ] }
 //
-// and a wire_search match is
+// and a wire_search match (engine usewire/wire#126 and later) is
 //
-//   { id, score, content, source, distance_km?, provenance: { tags?, ingestedAt?, ... }, _meta }
+//   { id, score, content, source, distance_km?,
+//     fields?: { lat, lng, name, address, locality, ... },   // declared-object records; coordinates
+//     fields_truncated?: true,                               // first, trimmed to <= 4 KB
+//     provenance: { tags?, ingestedAt?, ... }, _meta }
 //
-// A match does NOT carry the record's `fields` (they live in the entry's properties._fields).
-// What it carries is `content`, which Someday's save_place writes as
+// `match.fields` is read FIRST, for everything (coordinates, name, address, area). Tags come from
+// top-level `tags`, then `provenance.tags`. Then, for other producers: `object.fields`, `_fields`,
+// `properties._fields`, a JSON object `content`, and top-level / nested `place` lat/lng (rows like
+// whats_on's). Last resort, for engines before #126: the content text Someday's save_place writes,
 //
 //   "<name>\n<address>\n<area>\nlat <lat>, lng <lng>"
 //
-// and its tags under `provenance.tags`. So the reader tries, in order: fields wherever a
-// producer might have put them (`fields`, `object.fields`, `_fields`, `properties._fields`),
-// a JSON object `content` (a record written with object content), top-level lat/lng (rows
-// like whats_on's), and finally the content text itself. A match without usable coordinates
-// is skipped and counted, never placed at (0, 0).
+// A match without usable coordinates is skipped and counted, never placed at (0, 0).
 //
 // The result may arrive as `structuredContent` or as JSON in a text content block; both are
 // read. Nothing here trusts a string to be HTML: every value is rendered as text by React.
@@ -132,24 +133,30 @@ export function readPlace(raw: unknown, index: number): Place | null {
     m,
   ].filter((s): s is Obj => !!s);
 
-  let lat = num(firstOf(sources, ["lat", "latitude"]));
-  let lng = num(firstOf(sources, ["lng", "lon", "long", "longitude"]));
-  if (!validLat(lat) || !validLng(lng)) {
-    const fromText = content ? coordsFromText(content) : null;
-    if (!fromText) return null;
-    lat = fromText.lat;
-    lng = fromText.lng;
+  // The coordinate PAIR comes from one source (never lat from one and lng from another), the
+  // first that has both; `match.fields` is first.
+  let coords: { lat: number; lng: number } | null = null;
+  for (const s of sources) {
+    const lat = num(firstOf([s], ["lat", "latitude"]));
+    const lng = num(firstOf([s], ["lng", "lon", "long", "longitude"]));
+    if (validLat(lat) && validLng(lng)) {
+      coords = { lat, lng };
+      break;
+    }
   }
-
-  // Content lines, minus the coordinate line: name, address, area (Someday's order).
-  const lines = content && !contentObj ? content.split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !isCoordLine(l)) : [];
+  // Last resort (engines before usewire/wire#126, whose matches carry no fields): scrape the
+  // content Someday's save_place writes. Only then are its lines read for name / address / area.
+  const scraped = !coords && content ? coordsFromText(content) : null;
+  if (!coords && !scraped) return null;
+  const { lat, lng } = (coords ?? scraped)!;
+  const lines = scraped && !contentObj ? content!.split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !isCoordLine(l)) : [];
 
   const name = str(firstOf(sources, ["name", "title", "place_name"])) ?? lines[0] ?? "Unnamed place";
   const address = str(firstOf(sources, ["address", "formatted_address"])) ?? (lines[1] && lines[1] !== name ? lines[1] : null);
   const areaParts = ["locality", "region", "country"].map((k) => str(firstOf(sources, [k]))).filter((s): s is string => !!s);
   const area = areaParts.length ? [...new Set(areaParts)].join(", ") : (lines[2] ?? null);
 
-  const tagSource = m.tags ?? provenance?.tags ?? firstOf(sources, ["tags"]);
+  const tagSource = m.tags ?? provenance?.tags ?? firstOf(sources.filter((s) => s !== m), ["tags"]);
   const entryId = str(m.id) ?? str(m.entryId) ?? str(m.entry_id) ?? str(m.place_id) ?? str(place?.id);
   const distanceKm = num(m.distance_km ?? m.distanceKm);
 

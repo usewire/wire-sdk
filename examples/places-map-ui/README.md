@@ -29,12 +29,21 @@ The tool result, as `structuredContent` or as JSON in a text block (Wire's `tool
 { "presentation": "map", "center": { "lat": 40.7359, "lng": -73.9911 }, "matches": [ ... ] }
 ```
 
-Each match is a `wire_search` match: `{ id, score, content, source, distance_km?, provenance, _meta }`.
-**A match does not carry the record's fields.** Coordinates come from the `content` Someday's
-`save_place` writes (`name\naddress\narea\nlat <lat>, lng <lng>`) and tags from `provenance.tags`.
-`src/places.ts` also accepts `fields` / `object.fields` / `_fields` / `properties._fields`, JSON
-content, and rows with top-level or nested `place` `lat`/`lng` (what's-on style). A match with no
-usable coordinates is skipped and counted, never pinned at 0,0.
+Each match is a `wire_search` match. Since engine usewire/wire#126, a declared-object record
+carries its `fields`, coordinates first, capped at 4 KB (`fields_truncated: true` when trimmed):
+
+```json
+{ "id": "…", "score": 0.91, "content": "…", "source": "app:someday", "distance_km": 0.36,
+  "fields": { "lat": 37.7825, "lng": -122.4074, "name": "Blue Bottle Coffee", "address": "66 Mint St" },
+  "provenance": { "tags": ["coffee"], … } }
+```
+
+`src/places.ts` reads `match.fields` first: coordinates, name, address, and locality / region /
+country. Tags come from top-level `tags`, then `provenance.tags`. It also accepts `object.fields`,
+`_fields`, `properties._fields`, JSON content, and rows with top-level or nested `place` `lat`/`lng`
+(what's-on style). For engines before #126, the last resort is the content Someday's `save_place`
+writes (`name\naddress\narea\nlat <lat>, lng <lng>`); `LEGACY_MATCHES=1 npm run dev:server` serves
+that shape. A match with no usable coordinates is skipped and counted, never pinned at 0,0.
 
 ## What it does
 
