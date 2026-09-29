@@ -1,0 +1,40 @@
+{
+  "name": "places-map-ui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Reference MCP App (io.modelcontextprotocol/ui): saved places on an interactive map, built with mapcn.",
+  "scripts": {
+    "build": "tsc --noEmit && vite build && node scripts/postbuild.mjs",
+    "dev:server": "node dev-server/server.mjs",
+    "type-check": "tsc --noEmit",
+    "verify:cdn": "node scripts/postbuild.mjs --verify-cdn"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/client": "2.0.0",
+    "@modelcontextprotocol/core": "2.0.0",
+    "@modelcontextprotocol/ext-apps": "2.0.3",
+    "clsx": "2.1.1",
+    "lucide-react": "1.48.0",
+    "preact": "10.29.8",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "tailwind-merge": "3.7.0",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/node": "2.0.0",
+    "@modelcontextprotocol/server": "2.0.0",
+    "@tailwindcss/vite": "4.3.3",
+    "@types/geojson": "7946.0.16",
+    "@types/node": "22.20.4",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "4.7.0",
+    "maplibre-gl": "6.11.2",
+    "tailwindcss": "4.3.3",
+    "typescript": "5.9.3",
+    "vite": "6.4.3",
+    "vite-plugin-singlefile": "2.3.3"
+  }
+}

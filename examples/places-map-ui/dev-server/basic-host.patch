@@ -1,0 +1,56 @@
+Test-only changes to modelcontextprotocol/ext-apps examples/basic-host (ext-apps 2.0.3).
+Apply from the basic-host directory:  patch -p1 < <this file>
+
+- STRICT_SPEC_CSP=1 serves the sandbox with the spec's reference CSP (no blob:, no 'unsafe-eval',
+  no worker-src) instead of basic-host's permissive one, so the main-thread worker fallback is
+  exercised.
+- Advertises the `message` host capability (basic-host handles ui/message but does not declare
+  it, so the view hides its "Tell me more" button there).
+- Logs app log messages as JSON, so the view's diagnostics are readable in the host console.
+
+--- a/serve.ts
++++ b/serve.ts
+@@ -71,6 +71,23 @@
+   const baseUriDomains =
+     sanitizeCspDomains(csp?.baseUriDomains).join(" ") || null;
+ 
++  // STRICT_SPEC_CSP=1: the MCP Apps spec's reference CSP (2026-01-26, "CSP Construction from
++  // Metadata"), verbatim: no blob:, no 'unsafe-eval', no worker-src.
++  if (process.env.STRICT_SPEC_CSP) {
++    return [
++      "default-src 'none'",
++      `script-src 'self' 'unsafe-inline' ${resourceDomains}`.trim(),
++      `style-src 'self' 'unsafe-inline' ${resourceDomains}`.trim(),
++      `connect-src 'self' ${connectDomains}`.trim(),
++      `img-src 'self' data: ${resourceDomains}`.trim(),
++      `font-src 'self' ${resourceDomains}`.trim(),
++      `media-src 'self' data: ${resourceDomains}`.trim(),
++      `frame-src ${frameDomains ?? "'none'"}`,
++      "object-src 'none'",
++      `base-uri ${baseUriDomains ?? "'self'"}`,
++    ].join("; ");
++  }
++
+   const directives = [
+     // Default: allow same-origin + inline styles/scripts (needed for bundled apps)
+     "default-src 'self' 'unsafe-inline'",
+--- a/src/implementation.ts
++++ b/src/implementation.ts
+@@ -290,6 +290,8 @@
+     serverResources: serverCapabilities?.resources,
+     // Declare support for model context updates
+     updateModelContext: { text: {} },
++    // (local test patch) basic-host handles ui/message (onmessage below) but doesn't advertise it.
++    message: { text: {} },
+   }, {
+     // Pass initial host context with theme, display mode, and style variables
+     hostContext: {
+@@ -349,7 +351,7 @@
+   };
+ 
+   appBridge.onloggingmessage = (params) => {
+-    log.info("Log message from MCP App:", params);
++    log.info("Log message from MCP App:", JSON.stringify(params));
+   };
+ 
+   appBridge.onupdatemodelcontext = async (params) => {
