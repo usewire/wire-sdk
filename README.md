@@ -147,8 +147,29 @@ const connection = await client.connectInBrowser({
 });
 
 // On your callback page (safe to call on every load):
-const connection = await client.completeConnectInBrowser();
+try {
+  const connection = await client.completeConnectInBrowser();
+  if (connection) save(connection); // null: this page load isn't a callback
+} catch (err) {
+  // CONNECT_STATE_LOST: offer "Connect again". OAUTH_ERROR: the user declined.
+}
 ```
+
+`completeConnectInBrowser()` returns the Connection on a callback, `null`
+when the URL has no `code` or `error` (not a callback), and throws
+otherwise:
+
+- `CONNECT_STATE_LOST`: the URL has a code, but this browser has no record
+  of starting the connect. The sign-in finished in a different browser, or
+  more than 10 minutes after it started. Ask the user to start again.
+- `OAUTH_ERROR`: the user declined, or the code could not be exchanged.
+- `STATE_MISMATCH`: the callback's `state` is not the one this tab sent.
+
+A redirect connect can finish in a different tab of the same origin. Signing
+up with a magic link opens one, and the SDK keeps the PKCE verifier in
+`localStorage` (falling back to `sessionStorage`) so that tab can finish it.
+If neither is writable, a redirect-mode `connectInBrowser()` throws
+`STORAGE_UNAVAILABLE` before leaving the page; popup mode stores nothing.
 
 Register your redirect URIs on the agent in the Wire dashboard first.
 Browser connections have no `deviceKey`; the OAuth grant is the identity.
@@ -1009,7 +1030,8 @@ and imports nothing Node-specific.
 ## Errors
 
 Rejected promises throw `WireSdkError` with a `code` and HTTP `status` when
-applicable. On `@usewire/sdk/agent`, a failed verification throws
+applicable (browser connect's codes are under
+[From a browser app](#from-a-browser-app)). On `@usewire/sdk/agent`, a failed verification throws
 `WireActionAuthError` (`code`, and `status`: 401, 413, or 503 when your agent
 could not check), and `defineManifest` throws `WireManifestError` with
 `issues`. `WireAgentClient` throws `WireAgentApiError` (a `WireSdkError` with

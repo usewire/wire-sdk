@@ -55,7 +55,11 @@ const CLAIM_TIMEOUT_MS = 5 * 60 * 1000;
 const OAUTH_AUTHORIZE_PATH = '/api/auth/oauth2/authorize';
 const OAUTH_TOKEN_PATH = '/api/auth/oauth2/token';
 const OAUTH_SCOPE = 'containers:read containers:write';
+// The PKCE stash lives in localStorage under `${KEY}:${state}`, so a callback
+// that lands in a new tab (a magic-link sign-in opens one) still finds it.
+// The bare key is where SDKs before 0.15.2 kept it, in sessionStorage.
 const BROWSER_CONNECT_STORAGE_KEY = 'wire-sdk:browser-connect';
+const BROWSER_CONNECT_STASH_TTL_MS = 10 * 60 * 1000;
 const BROWSER_CONNECT_MESSAGE_TYPE = 'wire-sdk:browser-connect-result';
 
 /**
@@ -317,17 +321,21 @@ export class WireClient {
     authorizeUrl.searchParams.set('code_challenge_method', 'S256');
 
     if (!options.popup) {
-      sessionStorage.setItem(
-        BROWSER_CONNECT_STORAGE_KEY,
-        JSON.stringify({ verifier, state, redirectUri: options.redirectUri, agentId: this.agentId })
-      );
+      writeBrowserConnectStash({
+        verifier,
+        state,
+        redirectUri: options.redirectUri,
+        agentId: this.agentId,
+        createdAt: Date.now(),
+      });
       location.assign(authorizeUrl.toString());
       // The page is navigating away; hold forever so callers can `await`.
       return new Promise<never>(() => {});
     }
 
     // Popup mode: the verifier stays in this window's memory; the popup's
-    // callback page posts the code back via postMessage.
+    // callback page posts the code back via postMessage. No stash is written,
+    // which is how the callback page tells a popup child from a redirect.
     const popup = window.open(authorizeUrl.toString(), 'wire-connect', 'width=480,height=720');
     if (!popup) {
       throw new WireSdkError('POPUP_BLOCKED', 'The browser blocked the connect popup');
@@ -377,12 +385,16 @@ export class WireClient {
    * unconditionally on page load:
    *
    * - Redirect mode: exchanges the code and returns the Connection
-   *   (also scrubs code/state from the URL).
+   *   (also scrubs code/state from the URL). This works in another tab of
+   *   the same origin too, e.g. one a magic-link sign-in opened.
    * - Popup mode: relays the result to the opener window and closes the
    *   popup; returns null.
    * - No OAuth params in the URL: returns null.
    *
-   * Throws OAUTH_ERROR if the user denied access.
+   * Throws OAUTH_ERROR if the user denied access, and CONNECT_STATE_LOST
+   * when the URL carries a code this browser has no record of starting
+   * (another browser, or started more than 10 minutes ago): the user
+   * needs to start connecting again.
    */
   async completeConnectInBrowser(): Promise<Connection | null> {
     requireBrowser('completeConnectInBrowser');
@@ -392,10 +404,16 @@ export class WireClient {
     const oauthError = params.get('error');
     if (!code && !oauthError) return null;
 
-    const stashRaw = sessionStorage.getItem(BROWSER_CONNECT_STORAGE_KEY);
+    const found = state ? readBrowserConnectStash(state) : null;
+    // A flow started before 0.15.2 kept its stash in this tab's sessionStorage.
+    const legacy = found ? null : readLegacyBrowserConnectStash();
+    const stash =
+      found === 'expired' ? null : (found ?? (legacy?.state === state ? legacy : null));
 
-    // Popup child: no stash here (it lives in the opener) — relay and close.
-    if (!stashRaw && window.opener) {
+    // Popup child: popup mode writes no stash (the verifier lives in the
+    // opener's memory) — relay and close. A redirect that lands in a window
+    // that happens to have an opener has a stash, so it is exchanged below.
+    if (!found && !stash && window.opener) {
       (window.opener as Window).postMessage(
         {
           type: BROWSER_CONNECT_MESSAGE_TYPE,
@@ -412,31 +430,41 @@ export class WireClient {
     }
 
     if (oauthError) {
-      sessionStorage.removeItem(BROWSER_CONNECT_STORAGE_KEY);
+      if (state) clearBrowserConnectStash(state);
       scrubOAuthParams();
       throw new WireSdkError(
         'OAUTH_ERROR',
         params.get('error_description') ?? oauthError
       );
     }
-    if (!stashRaw) return null;
-
-    const stash = JSON.parse(stashRaw) as {
-      verifier: string;
-      state: string;
-      redirectUri: string;
-      agentId: string;
-    };
+    if (!stash) {
+      // This tab is mid-way through a different flow: not the callback we sent.
+      if (legacy) {
+        throw new WireSdkError('STATE_MISMATCH', 'OAuth state did not match');
+      }
+      // Never null here: null means "not a callback", and a page that shows
+      // nothing for a code it cannot redeem is a dead end for the user.
+      scrubOAuthParams();
+      throw new WireSdkError(
+        'CONNECT_STATE_LOST',
+        'This sign-in finished in a different browser or the link expired. Start connecting again.'
+      );
+    }
     if (stash.state !== state) {
       throw new WireSdkError('STATE_MISMATCH', 'OAuth state did not match');
     }
 
-    const connection = await this.exchangeBrowserCode(
-      code!,
-      stash.redirectUri,
-      stash.verifier
-    );
-    sessionStorage.removeItem(BROWSER_CONNECT_STORAGE_KEY);
+    let connection: Connection;
+    try {
+      connection = await this.exchangeBrowserCode(
+        code!,
+        stash.redirectUri,
+        stash.verifier
+      );
+    } finally {
+      // The code is single-use, so the stash is spent whatever the answer.
+      clearBrowserConnectStash(stash.state);
+    }
     scrubOAuthParams();
     return connection;
   }
@@ -787,6 +815,138 @@ function scrubOAuthParams(): void {
     history.replaceState(null, '', url.toString());
   } catch {
     // Cosmetic only.
+  }
+}
+
+/** What a redirect-mode connect leaves behind for its callback page. */
+interface BrowserConnectStash {
+  verifier: string;
+  state: string;
+  redirectUri: string;
+  agentId: string;
+  /** Epoch ms. Absent on a pre-0.15.2 sessionStorage stash, which never expires. */
+  createdAt?: number;
+}
+
+type StorageKind = 'localStorage' | 'sessionStorage';
+
+/** The named Web Storage, or null where it is missing or blocked (even reading the global can throw). */
+function webStorage(kind: StorageKind): Storage | null {
+  try {
+    return ((globalThis as Record<string, unknown>)[kind] as Storage | undefined) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function browserConnectStashKey(state: string): string {
+  return `${BROWSER_CONNECT_STORAGE_KEY}:${state}`;
+}
+
+function isStashExpired(stash: BrowserConnectStash, now = Date.now()): boolean {
+  return typeof stash.createdAt !== 'number' || now - stash.createdAt > BROWSER_CONNECT_STASH_TTL_MS;
+}
+
+function parseStash(raw: string | null): BrowserConnectStash | null {
+  if (!raw) return null;
+  try {
+    const stash = JSON.parse(raw) as BrowserConnectStash;
+    return stash && typeof stash.verifier === 'string' && typeof stash.state === 'string'
+      ? stash
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Store the stash under its state in localStorage, which every tab of this
+ * origin shares; sessionStorage if localStorage is unavailable. Sweeps our
+ * expired entries on the way, since an abandoned flow never comes back to
+ * delete its own.
+ */
+function writeBrowserConnectStash(stash: BrowserConnectStash): void {
+  const value = JSON.stringify(stash);
+  for (const kind of ['localStorage', 'sessionStorage'] as const) {
+    const store = webStorage(kind);
+    if (!store) continue;
+    sweepExpiredStashes(store);
+    try {
+      store.setItem(browserConnectStashKey(stash.state), value);
+      return;
+    } catch {
+      // Blocked or full: try the next store.
+    }
+  }
+  throw new WireSdkError(
+    'STORAGE_UNAVAILABLE',
+    'Browser storage is unavailable, so a redirect connect cannot be finished. Allow site storage or use popup mode.'
+  );
+}
+
+function sweepExpiredStashes(store: Storage): void {
+  try {
+    const prefix = `${BROWSER_CONNECT_STORAGE_KEY}:`;
+    const stale: string[] = [];
+    for (let i = 0; i < store.length; i++) {
+      const key = store.key(i);
+      if (!key?.startsWith(prefix)) continue;
+      const stash = parseStash(store.getItem(key));
+      if (!stash || isStashExpired(stash)) stale.push(key);
+    }
+    for (const key of stale) store.removeItem(key);
+  } catch {
+    // Housekeeping only.
+  }
+}
+
+/** The stash for `state`: the stash, 'expired' (and now removed), or null if none. */
+function readBrowserConnectStash(state: string): BrowserConnectStash | 'expired' | null {
+  const key = browserConnectStashKey(state);
+  for (const kind of ['localStorage', 'sessionStorage'] as const) {
+    const store = webStorage(kind);
+    if (!store) continue;
+    let raw: string | null;
+    try {
+      raw = store.getItem(key);
+    } catch {
+      continue;
+    }
+    if (raw === null) continue;
+    const stash = parseStash(raw);
+    if (!stash || isStashExpired(stash)) {
+      clearBrowserConnectStash(state);
+      return 'expired';
+    }
+    return stash;
+  }
+  return null;
+}
+
+/** A stash written by an SDK before 0.15.2: this tab only, one at a time. */
+function readLegacyBrowserConnectStash(): BrowserConnectStash | null {
+  try {
+    return parseStash(webStorage('sessionStorage')?.getItem(BROWSER_CONNECT_STORAGE_KEY) ?? null);
+  } catch {
+    return null;
+  }
+}
+
+/** Remove the stash for `state` wherever it is, including a matching legacy one. */
+function clearBrowserConnectStash(state: string): void {
+  for (const kind of ['localStorage', 'sessionStorage'] as const) {
+    try {
+      webStorage(kind)?.removeItem(browserConnectStashKey(state));
+    } catch {
+      // Nothing more to do.
+    }
+  }
+  if (readLegacyBrowserConnectStash()?.state === state) {
+    try {
+      webStorage('sessionStorage')?.removeItem(BROWSER_CONNECT_STORAGE_KEY);
+    } catch {
+      // Nothing more to do.
+    }
   }
 }
 
