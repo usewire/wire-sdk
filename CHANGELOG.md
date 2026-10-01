@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.15.2
+
+- **Browser connect finishes in a new tab.** `connectInBrowser()` kept its
+  PKCE verifier in `sessionStorage`, which belongs to one tab. When a user
+  signed up by magic link, the email opened a new tab, the callback landed
+  there, and `completeConnectInBrowser()` found nothing and returned `null`.
+  The code was never exchanged, and the app had nothing to show.
+  - The verifier now lives in `localStorage` under the flow's `state`
+    (`sessionStorage` if `localStorage` is unavailable). It expires after
+    10 minutes and is deleted once used, whether the exchange succeeds or
+    fails. Expired entries are swept when a new connect starts.
+  - A connect started on 0.15.1 or earlier, whose verifier is in this tab's
+    `sessionStorage`, still completes.
+- **New error: `CONNECT_STATE_LOST`.** `completeConnectInBrowser()` throws it
+  when the URL has a code but this browser has no record of starting the
+  connect (a different browser, or more than 10 minutes later). Show the user
+  a way to start again. `null` now means only "this page isn't a callback"
+  (no `code` and no `error` in the URL).
+- Popup mode is unchanged: it stores nothing, and the popup's callback page
+  relays the code to its opener.
+- If neither storage is writable, a redirect-mode `connectInBrowser()` now
+  throws `STORAGE_UNAVAILABLE` before leaving the page, instead of the
+  browser's own exception.
+
 ## 0.15.1
 
 - `examples/places-map-ui`: map tiles now load in ChatGPT, whose widget CSP is
