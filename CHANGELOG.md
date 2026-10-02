@@ -20,6 +20,9 @@
 - **New error: `WireExportLimitError`** (`code: "EXPORT_LIMIT"`, status 429),
   a `WireAgentApiError` with a typed `retryAfter: Date | null`. Its
   `retryable` is false. Other 429s are unchanged and stay retryable.
+- `requestExport` of a revoked install is refused with 409
+  `AGENT_DISCONNECTED`, and of an unclaimed trial with 409 `INSTALL_IS_TRIAL`,
+  both thrown as `WireAgentApiError` (not `retryable`).
 - New types: `WireExportRequest`, `WireExport`, `WireExportStatus`; new
   constant `EXPORT_LIMIT`.
 - The client now signs `body_sha256` on `POST` as well as `DELETE`

@@ -845,6 +845,7 @@ a `WireSdkError` with Wire's `code`, the HTTP `status`, and `retryable`:
 | `UNAUTHORIZED`, `INVALID_TOKEN`, `TOKEN_EXPIRED`, `REPLAY_DETECTED`, `CREDENTIAL_REVOKED`, `RUNTIME_KEY_REQUIRED`, `UNKNOWN_AGENT` | 401 | The key or token was refused (a publish key, a revoked key, a clock more than a minute off) |
 | `AGENT_DISABLED` | 403 | Your agent is disabled |
 | `NOT_FOUND` | 404 | `revokeInstall` or `requestExport` of an install your agent does not have, or whose container is gone |
+| `AGENT_DISCONNECTED`, `INSTALL_IS_TRIAL` | 409 | `requestExport` of a revoked install, or of an unclaimed trial. See [Export a container](#export-a-container) |
 | `EXPORT_LIMIT` | 429 | `requestExport`: the container has reached an export limit. Thrown as `WireExportLimitError`, with `retryAfter`. Not `retryable` before then |
 | `CONTAINER_UNAVAILABLE` | 502 | `revokeInstall`: the connections ended but the container could not finish the uninstall yet. `retryable`: call it again |
 | `UNAVAILABLE` | 503 | Wire could not answer. `retryable` |
@@ -897,6 +898,14 @@ now?.expiresAt;   // Date | null: when the archive stops being downloadable
 handles those still sees it. Its `retryable` is false: calling again before
 `retryAfter` gets the same answer. An install your agent does not have is
 `NOT_FOUND` (404) from `requestExport`, and `null` from `getExport`.
+
+Two installs cannot be exported, and `requestExport` refuses them with a
+`WireAgentApiError` (409, not `retryable`):
+
+| `code` | When | What it means |
+|---|---|---|
+| `AGENT_DISCONNECTED` | The install is revoked: the user disconnected your agent, or it was uninstalled | Exporting through your agent needs an active install: the user reconnects your agent first |
+| `INSTALL_IS_TRIAL` | The install is on an unclaimed trial container | Claim the container first (the install's `claimUrl`), then export |
 
 ### Webhooks
 

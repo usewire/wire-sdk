@@ -507,6 +507,29 @@ describe('WireAgentClient: exports', () => {
     expect([e.code, e.retryable]).toEqual(['RATE_LIMITED', true]);
   });
 
+  it("Wire's 429 (EXPORT_LIMIT, retryAfter and a Retry-After header) reads retryAfter from the body", async () => {
+    const retryAfter = '2026-10-03T12:00:00.000Z';
+    const api = wireAgentApi(keys, () => ({
+      status: 429,
+      body: { success: false, error: { code: 'EXPORT_LIMIT', message: 'One export per 24 hours', retryAfter } },
+      headers: { 'retry-after': '86400' },
+    }));
+    const e = (await client(api).requestExport(INSTALL).catch((x: unknown) => x)) as WireExportLimitError;
+    expect(e).toBeInstanceOf(WireExportLimitError);
+    expect([e.code, e.status, e.retryable]).toEqual([EXPORT_LIMIT, 429, false]);
+    expect(e.retryAfter).toEqual(new Date(retryAfter));
+  });
+
+  for (const code of ['AGENT_DISCONNECTED', 'INSTALL_IS_TRIAL']) {
+    it(`409 ${code} is a WireAgentApiError with that code, not retryable`, async () => {
+      const api = wireAgentApi(keys, () => err(409, code, 'Cannot export this install'));
+      const e = (await client(api).requestExport(INSTALL).catch((x: unknown) => x)) as WireAgentApiError;
+      expect(e).toBeInstanceOf(WireAgentApiError);
+      expect(e).not.toBeInstanceOf(WireExportLimitError);
+      expect([e.code, e.status, e.retryable, e.message]).toEqual([code, 409, false, 'Cannot export this install']);
+    });
+  }
+
   it('requestExport of an install this agent does not have throws NOT_FOUND (404)', async () => {
     const api = wireAgentApi(keys, () => err(404, 'NOT_FOUND', 'Install not found'));
     const e = (await client(api).requestExport(INSTALL).catch((x: unknown) => x)) as WireAgentApiError;
