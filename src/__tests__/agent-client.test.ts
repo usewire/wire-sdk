@@ -4,7 +4,7 @@
  * key looked up by kid, `jwtVerify` with `aud` one of `wire-agent-api` /
  * `wire-app-api` (the platform accepts both during the rename), `iss` the
  * key's agent, a jti of 8+ characters used once, a lifetime of 1..60 s, `iat`
- * not in the future, and on DELETE `body_sha256` of the exact body. The door
+ * not in the future, and on POST and DELETE `body_sha256` of the exact body. The door
  * answers both `/api/v1/agents/...` and the deprecated `/api/v1/apps/...`.
  * So a token this client mints is one the platform accepts, and the other way
  * round.
@@ -20,6 +20,8 @@ import {
   WireAgentClient,
   WireAppApiError,
   WireAppClient,
+  WireExportLimitError,
+  EXPORT_LIMIT,
   type WireAgentClientOptions,
 } from '../app/index.js';
 import * as agentEntry from '../agent/index.js';
@@ -43,7 +45,7 @@ async function sha(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
   return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
-type Answer = { status: number; body: unknown };
+type Answer = { status: number; body: unknown; headers?: Record<string, string> };
 
 /** The platform's agent API door: auth exactly as the platform's, then `route` answers. */
 function wireAgentApi(keys: Map<string, RegisteredKey>, route: (method: string, path: string) => Answer) {
@@ -85,8 +87,8 @@ function wireAgentApi(keys: Map<string, RegisteredKey>, route: (method: string, 
     if (typeof payload.iat !== 'number' || typeof payload.exp !== 'number') return fail(401, 'INVALID_TOKEN', 'Missing iat or exp');
     if (payload.exp <= payload.iat || payload.exp - payload.iat > 60) return fail(401, 'INVALID_TOKEN', 'JWT lifetime must be 1..60s');
     if (payload.iat > Math.floor(Date.now() / 1000) + 30) return fail(401, 'INVALID_TOKEN', 'JWT issued in the future');
-    if (req.method === 'DELETE') {
-      const raw = new Uint8Array(await req.arrayBuffer());
+    if (req.method === 'POST' || req.method === 'DELETE') {
+      const raw = new Uint8Array(await req.clone().arrayBuffer());
       if (payload.body_sha256 !== (await sha(raw))) return fail(401, 'INVALID_TOKEN', 'body_sha256 mismatch');
     }
     const replayKey = `sdk:jti:${payload.iss}:${payload.jti}`;
@@ -98,7 +100,7 @@ function wireAgentApi(keys: Map<string, RegisteredKey>, route: (method: string, 
     // A path naming another agent is 404.
     if (!m || m[2].replace(/_/g, '-') !== key.agentId) return fail(404, 'NOT_FOUND', 'Install not found');
     const a = route(req.method, m[3]);
-    return new Response(typeof a.body === 'string' ? a.body : JSON.stringify(a.body), { status: a.status });
+    return new Response(typeof a.body === 'string' ? a.body : JSON.stringify(a.body), { status: a.status, headers: a.headers });
   });
   return { fetch: fetchImpl as unknown as typeof fetch, requests, mock: fetchImpl };
 }
@@ -401,6 +403,182 @@ describe('WireAgentClient: error mapping', () => {
     const api = wireAgentApi(keys, () => ok({ installId: INSTALL }));
     const e = (await client(api).getInstall(INSTALL).catch((x: unknown) => x)) as WireAgentApiError;
     expect(e.code).toBe('INVALID_RESPONSE');
+  });
+});
+
+describe('WireAgentClient: exports', () => {
+  const EXPORT = 'exp_dddddddddddddddddddddddd';
+  const accepted = (data: unknown): Answer => ({ status: 202, body: { success: true, data } });
+  const queued = { exportId: EXPORT, status: 'queued', createdAt: '2026-10-02T12:00:00.000Z', reused: false };
+
+  it('requestExport POSTs {} with body_sha256 over those exact bytes, and the door accepts it', async () => {
+    const api = wireAgentApi(keys, (m, path) => (m === 'POST' && path === `/installs/${INSTALL}/export` ? accepted(queued) : err(404, 'NOT_FOUND')));
+    await client(api).requestExport(INSTALL);
+    const req = api.requests[0];
+    expect(req.method).toBe('POST');
+    expect(req.url).toBe(`https://preview.app.usewire.io/api/v1/agents/someday/installs/${INSTALL}/export`);
+    expect(req.headers.get('content-type')).toBe('application/json');
+    expect(await req.text()).toBe('{}');
+    const token = req.headers.get('authorization')!.slice(7);
+    expect(decodeProtectedHeader(token)).toEqual({ alg: 'EdDSA', kid: 'pk_runtime' });
+    const p = decodeJwt(token);
+    expect([p.iss, p.aud, p.exp! - p.iat!]).toEqual(['someday', 'wire-agent-api', 60]);
+    expect(typeof p.jti === 'string' && p.jti.length >= 8).toBe(true);
+    expect(p.body_sha256).toBe(await sha(new TextEncoder().encode('{}')));
+    expect(p.body_sha256).not.toBe(EMPTY_BODY_SHA256);
+  });
+
+  it('a body_sha256 that does not cover the bytes sent is refused by the door', async () => {
+    const api = wireAgentApi(keys, () => accepted(queued));
+    const token = await client(api).signRequestToken('POST', '');
+    const res = await api.fetch(`https://preview.app.usewire.io/api/v1/agents/someday/installs/${INSTALL}/export`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: '{}',
+    });
+    expect(res.status).toBe(401);
+    expect(((await res.json()) as { error: { message: string } }).error.message).toMatch(/body_sha256/);
+  });
+
+  it('requestExport returns the typed answer: a new export', async () => {
+    const api = wireAgentApi(keys, () => accepted(queued));
+    expect(await client(api).requestExport(INSTALL)).toEqual({
+      exportId: EXPORT,
+      status: 'queued',
+      createdAt: new Date('2026-10-02T12:00:00.000Z'),
+      reused: false,
+    });
+  });
+
+  it('requestExport within 24 hours answers with the archive already made (reused)', async () => {
+    const api = wireAgentApi(keys, () =>
+      accepted({ exportId: EXPORT, status: 'completed', createdAt: '2026-10-02T08:00:00.000Z', reused: true })
+    );
+    const r = await client(api).requestExport(INSTALL);
+    expect(r.reused).toBe(true);
+    expect(r.status).toBe('completed');
+    expect(r.createdAt).toEqual(new Date('2026-10-02T08:00:00.000Z'));
+  });
+
+  it('reads an envelope without `success` by its data', async () => {
+    const api = wireAgentApi(keys, () => ({ status: 202, body: { data: queued } }));
+    expect((await client(api).requestExport(INSTALL)).exportId).toBe(EXPORT);
+  });
+
+  it('429 export_limit is WireExportLimitError (EXPORT_LIMIT) with a typed retryAfter, not retryable', async () => {
+    const retryAfter = '2026-11-01T00:00:00.000Z';
+    const api = wireAgentApi(keys, () => ({
+      status: 429,
+      body: { success: false, error: { code: 'export_limit', message: 'This container has used its 5 exports this month', retryAfter } },
+    }));
+    const e = (await client(api).requestExport(INSTALL).catch((x: unknown) => x)) as WireExportLimitError;
+    expect(e).toBeInstanceOf(WireExportLimitError);
+    expect(e).toBeInstanceOf(WireAgentApiError);
+    expect(e).toBeInstanceOf(WireSdkError);
+    expect(e.name).toBe('WireExportLimitError');
+    expect([e.code, e.status, e.retryable, e.message]).toEqual([EXPORT_LIMIT, 429, false, 'This container has used its 5 exports this month']);
+    expect(EXPORT_LIMIT).toBe('EXPORT_LIMIT');
+    expect(e.retryAfter).toEqual(new Date(retryAfter));
+  });
+
+  it('the upper-case code maps the same; a Retry-After header stands in for a missing retryAfter', async () => {
+    const api = wireAgentApi(keys, () => ({
+      status: 429,
+      body: { error: { code: 'EXPORT_LIMIT', message: 'Try tomorrow' } },
+      headers: { 'retry-after': '3600' },
+    }));
+    const before = Date.now();
+    const e = (await client(api).requestExport(INSTALL).catch((x: unknown) => x)) as WireExportLimitError;
+    expect(e).toBeInstanceOf(WireExportLimitError);
+    expect(e.retryAfter!.getTime()).toBeGreaterThanOrEqual(before + 3_600_000);
+    expect(e.retryAfter!.getTime()).toBeLessThan(Date.now() + 3_600_000 + 1000);
+  });
+
+  it('a limit with no time at all has retryAfter null', async () => {
+    const api = wireAgentApi(keys, () => err(429, 'export_limit', 'Limit reached'));
+    const e = (await client(api).requestExport(INSTALL).catch((x: unknown) => x)) as WireExportLimitError;
+    expect([e.code, e.retryAfter]).toEqual([EXPORT_LIMIT, null]);
+  });
+
+  it('any other 429 stays a retryable WireAgentApiError', async () => {
+    const api = wireAgentApi(keys, () => err(429, 'RATE_LIMITED', 'Slow down'));
+    const e = (await client(api).requestExport(INSTALL).catch((x: unknown) => x)) as WireAgentApiError;
+    expect(e).not.toBeInstanceOf(WireExportLimitError);
+    expect([e.code, e.retryable]).toEqual(['RATE_LIMITED', true]);
+  });
+
+  it('requestExport of an install this agent does not have throws NOT_FOUND (404)', async () => {
+    const api = wireAgentApi(keys, () => err(404, 'NOT_FOUND', 'Install not found'));
+    const e = (await client(api).requestExport(INSTALL).catch((x: unknown) => x)) as WireAgentApiError;
+    expect([e.code, e.status, e.retryable]).toEqual(['NOT_FOUND', 404, false]);
+  });
+
+  it('getExport GETs the export with no body hash, and returns its status and nothing else', async () => {
+    const api = wireAgentApi(keys, (m, path) =>
+      m === 'GET' && path === `/installs/${INSTALL}/exports/${EXPORT}`
+        ? ok({
+            exportId: EXPORT,
+            status: 'completed',
+            createdAt: '2026-10-02T12:00:00.000Z',
+            completedAt: '2026-10-02T12:04:00.000Z',
+            expiresAt: '2026-10-09T12:04:00.000Z',
+            // Wire never sends one; if anything did, the SDK would not pass it on.
+            downloadUrl: 'https://example.invalid/archive.zip',
+          })
+        : err(404, 'NOT_FOUND')
+    );
+    const x = await client(api).getExport(INSTALL, EXPORT);
+    expect(x).toEqual({
+      exportId: EXPORT,
+      status: 'completed',
+      createdAt: new Date('2026-10-02T12:00:00.000Z'),
+      completedAt: new Date('2026-10-02T12:04:00.000Z'),
+      expiresAt: new Date('2026-10-09T12:04:00.000Z'),
+    });
+    const req = api.requests[0];
+    expect(req.method).toBe('GET');
+    expect(decodeJwt(req.headers.get('authorization')!.slice(7)).body_sha256).toBeUndefined();
+  });
+
+  it('getExport of an export in progress has null completedAt and expiresAt', async () => {
+    const api = wireAgentApi(keys, () =>
+      ok({ exportId: EXPORT, status: 'running', createdAt: '2026-10-02T12:00:00.000Z', completedAt: null, expiresAt: null })
+    );
+    const x = (await client(api).getExport(INSTALL, EXPORT))!;
+    expect([x.status, x.completedAt, x.expiresAt]).toEqual(['running', null, null]);
+  });
+
+  it('getExport answers null for an export or install this agent does not have (404)', async () => {
+    const api = wireAgentApi(keys, () => err(404, 'NOT_FOUND', 'Export not found'));
+    expect(await client(api).getExport(INSTALL, EXPORT)).toBeNull();
+  });
+
+  it('ids are path-encoded and required', async () => {
+    const api = wireAgentApi(keys, () => err(404, 'NOT_FOUND'));
+    const c = client(api);
+    await c.getExport('ins_a/b', 'exp_../x');
+    expect(new URL(api.requests[0].url).pathname).toBe('/api/v1/agents/someday/installs/ins_a%2Fb/exports/exp_..%2Fx');
+    await expect(c.getExport(INSTALL, '')).rejects.toThrow(/exportId/);
+    await expect(c.requestExport('')).rejects.toThrow(/installId/);
+  });
+
+  it('a malformed export is INVALID_RESPONSE', async () => {
+    for (const data of [
+      { ...queued, status: 'done' },
+      { ...queued, reused: 'no' },
+      { ...queued, createdAt: 'not a date' },
+      { status: 'queued', createdAt: '2026-10-02T12:00:00.000Z', reused: false },
+    ]) {
+      const api = wireAgentApi(keys, () => accepted(data));
+      const e = (await client(api).requestExport(INSTALL).catch((x: unknown) => x)) as WireAgentApiError;
+      expect(e.code).toBe('INVALID_RESPONSE');
+    }
+  });
+
+  it("apiVersion 'apps' calls the deprecated path", async () => {
+    const api = wireAgentApi(keys, () => accepted(queued));
+    await client(api, { apiVersion: 'apps' }).requestExport(INSTALL);
+    expect(new URL(api.requests[0].url).pathname).toBe(`/api/v1/apps/someday/installs/${INSTALL}/export`);
   });
 });
 

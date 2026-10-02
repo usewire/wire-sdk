@@ -57,6 +57,8 @@ const AGENT_SIDE = [
   'managedByFromError',
   'CONTAINER_AGENT_MANAGED',
   'normalizeRevokedReason',
+  'WireExportLimitError',
+  'EXPORT_LIMIT',
 ];
 const DEPRECATED = ['WireAppClient', 'WireAppApiError', 'APP_API_AUDIENCE', 'APP_API_BODY_HASH_CLAIM', 'APP_API_TOKEN_LIFETIME_SEC', 'CONTAINER_APP_MANAGED'];
 

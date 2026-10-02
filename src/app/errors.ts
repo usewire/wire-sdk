@@ -180,6 +180,9 @@ export class WireWebhookError extends Error {
 
 const RETRYABLE_STATUSES: ReadonlySet<number> = new Set([429, 502, 503, 504]);
 
+/** The `code` of WireExportLimitError. */
+export const EXPORT_LIMIT = 'EXPORT_LIMIT';
+
 /**
  * A call to Wire's agent API (WireAgentClient) failed. `code` is Wire's error code
  * (`NOT_FOUND`, `INVALID_TOKEN`, `TOKEN_EXPIRED`, `REPLAY_DETECTED`,
@@ -192,7 +195,9 @@ const RETRYABLE_STATUSES: ReadonlySet<number> = new Set([429, 502, 503, 504]);
  * `retryable` is true when the same call may succeed if made again: a network
  * error, 429, 502 (for `revokeInstall`: the agent's connections were revoked but
  * the container could not finish the uninstall yet), 503 or 504. Each call
- * signs a fresh token, so retrying is calling the method again.
+ * signs a fresh token, so retrying is calling the method again. The exception
+ * is `EXPORT_LIMIT` (429, thrown as WireExportLimitError): not retryable until
+ * its `retryAfter`.
  */
 export class WireAgentApiError extends WireSdkError {
   readonly retryable: boolean;
@@ -200,10 +205,28 @@ export class WireAgentApiError extends WireSdkError {
   constructor(code: string, message: string, status?: number, details?: unknown, options?: { cause?: unknown }) {
     super(code, message, status, details);
     this.name = 'WireAgentApiError';
-    this.retryable = code === 'NETWORK_ERROR' || (status !== undefined && RETRYABLE_STATUSES.has(status));
+    this.retryable =
+      code === 'NETWORK_ERROR' || (code !== EXPORT_LIMIT && status !== undefined && RETRYABLE_STATUSES.has(status));
     if (options?.cause !== undefined) {
       (this as { cause?: unknown }).cause = options.cause;
     }
+  }
+}
+
+/**
+ * `requestExport` was refused because the container has reached an export
+ * limit: one new archive per 24 hours, or 5 per calendar month (HTTP 429).
+ * `retryAfter` is when Wire will start a new export for it, or null if Wire's
+ * answer did not say. `retryable` is false: the same call fails again until
+ * then.
+ */
+export class WireExportLimitError extends WireAgentApiError {
+  readonly retryAfter: Date | null;
+
+  constructor(message: string, retryAfter: Date | null, details?: unknown) {
+    super(EXPORT_LIMIT, message, 429, details);
+    this.name = 'WireExportLimitError';
+    this.retryAfter = retryAfter;
   }
 }
 
