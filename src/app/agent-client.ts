@@ -5,6 +5,8 @@
  *   GET    /api/v1/agents/{agentId}/installs/{installId}           getInstall
  *   GET    /api/v1/agents/{agentId}/users/{agentUserId}/installs   listInstalls
  *   DELETE /api/v1/agents/{agentId}/installs/{installId}           revokeInstall (uninstalls)
+ *   POST   /api/v1/agents/{agentId}/installs/{installId}/export    requestExport
+ *   GET    /api/v1/agents/{agentId}/installs/{installId}/exports/{exportId}  getExport
  *
  * Every request carries a fresh EdDSA JWT signed with one of the agent's
  * RUNTIME keys (registered with `purpose: "runtime"`; a publish key is refused
@@ -15,7 +17,8 @@
  *   aud          "wire-agent-api" (Wire also accepts the pre-0.10 "wire-app-api")
  *   iat, exp     exp = iat + 60
  *   jti          random, single use
- *   body_sha256  DELETE only: base64url SHA-256 of the exact body (empty here)
+ *   body_sha256  POST and DELETE: base64url SHA-256 of the exact body bytes
+ *                (`{}` for requestExport, the empty string for revokeInstall)
  *
  * Before 0.10 this was WireAppClient, calling `/api/v1/apps/{appId}/...` with
  * `aud: "wire-app-api"`. Wire still answers those paths (marked deprecated), so
@@ -25,7 +28,8 @@
  */
 import { importJWK, SignJWT } from 'jose';
 import { generateDeviceKey, randomJti } from '../crypto.js';
-import { WireAgentApiError } from './errors.js';
+import { WireAgentApiError, WireExportLimitError } from './errors.js';
+import { ExportShapeError, exportFromWire, exportRequestFromWire, type WireExport, type WireExportRequest } from './exports.js';
 import { InstallShapeError, installFromWire, type WireInstall } from './installs.js';
 import { sha256Base64Url } from './verify.js';
 
@@ -33,7 +37,7 @@ import { sha256Base64Url } from './verify.js';
 export const AGENT_API_AUDIENCE = 'wire-agent-api';
 /** Lifetime of an agent API token, seconds (Wire accepts at most 60). */
 export const AGENT_API_TOKEN_LIFETIME_SEC = 60;
-/** The body-hash claim on a DELETE. */
+/** The body-hash claim on a POST or DELETE. */
 export const AGENT_API_BODY_HASH_CLAIM = 'body_sha256';
 
 /** @deprecated The pre-0.10 audience, still accepted by Wire. The client signs `AGENT_API_AUDIENCE` unless `apiVersion: 'apps'`. */
@@ -81,8 +85,11 @@ export interface WireAgentClientOptions {
 interface Envelope {
   success?: boolean;
   data?: unknown;
-  error?: { code?: string; message?: string; details?: unknown };
+  error?: { code?: string; message?: string; details?: unknown; retryAfter?: unknown };
 }
+
+/** The body requestExport sends, exactly: these bytes are what `body_sha256` covers. */
+const EXPORT_REQUEST_BODY = '{}';
 
 export class WireAgentClient {
   /** The agent id this client signs as and reads the installs of. */
@@ -188,6 +195,43 @@ export class WireAgentClient {
     return data === null || data === undefined ? null : toInstall(data);
   }
 
+  /**
+   * Ask Wire to export the install's container. Wire builds an archive of it
+   * and emails the container's owner when it is ready; downloading it means
+   * signing in to Wire. Your agent never receives the archive or a download
+   * link: it gets an id and a status, to show progress with `getExport`.
+   *
+   * Limits are per container: one new archive per 24 hours (asking again
+   * inside that window resolves with the archive already made, `reused: true`),
+   * and at most 5 per calendar month.
+   *
+   * Throws WireExportLimitError (`EXPORT_LIMIT`, 429) past a limit, with
+   * `retryAfter`, and WireAgentApiError NOT_FOUND (404) for an install your
+   * agent does not have.
+   */
+  async requestExport(installId: string): Promise<WireExportRequest> {
+    requireId(installId, 'installId');
+    const data = await this.call('POST', `/installs/${encodeURIComponent(installId)}/export`, { body: EXPORT_REQUEST_BODY });
+    return toExport(exportRequestFromWire, data);
+  }
+
+  /**
+   * One export this agent started, by the `exportId` requestExport returned.
+   * Null when there is no such export for this install (or the install is not
+   * your agent's). Never includes a download URL.
+   */
+  async getExport(installId: string, exportId: string): Promise<WireExport | null> {
+    requireId(installId, 'installId');
+    requireId(exportId, 'exportId');
+    try {
+      const data = await this.call('GET', `/installs/${encodeURIComponent(installId)}/exports/${encodeURIComponent(exportId)}`);
+      return toExport(exportFromWire, data);
+    } catch (err) {
+      if (err instanceof WireAgentApiError && err.status === 404) return null;
+      throw err;
+    }
+  }
+
   /** Sign the agent API token for one request. Exposed for tests and custom transports. */
   async signRequestToken(method: string, body = ''): Promise<string> {
     this.key ??= importJWK({ ...this.jwk, alg: 'EdDSA' }, 'EdDSA');
@@ -199,7 +243,8 @@ export class WireAgentClient {
       throw new TypeError('WireAgentClient: runtimeKey.privateJwk could not be imported', { cause: err });
     }
     const claims: Record<string, unknown> = {};
-    if (method.toUpperCase() === 'DELETE') claims[AGENT_API_BODY_HASH_CLAIM] = await sha256Base64Url(body);
+    const m = method.toUpperCase();
+    if (m === 'POST' || m === 'DELETE') claims[AGENT_API_BODY_HASH_CLAIM] = await sha256Base64Url(body);
     const now = Math.floor(Date.now() / 1000);
     return new SignJWT(claims)
       .setProtectedHeader({ alg: 'EdDSA', kid: this.keyId })
@@ -211,16 +256,20 @@ export class WireAgentClient {
       .sign(key);
   }
 
-  private async call(method: 'GET' | 'DELETE', path: string, opts: { allowNullData?: boolean } = {}): Promise<unknown> {
+  private async call(
+    method: 'GET' | 'POST' | 'DELETE',
+    path: string,
+    opts: { allowNullData?: boolean; body?: string } = {}
+  ): Promise<unknown> {
     const url = `${this.base}/api/v1/${this.apiVersion}/${encodeURIComponent(this.agentId)}${path}`;
-    // An empty DELETE body, hashed as the empty string: nothing is sent.
-    const token = await this.signRequestToken(method, '');
+    // The token hashes exactly the bytes sent. No body (a DELETE) hashes as the empty string.
+    const body = opts.body;
+    const token = await this.signRequestToken(method, body ?? '');
+    const headers: Record<string, string> = { authorization: `Bearer ${token}`, accept: 'application/json' };
+    if (body !== undefined) headers['content-type'] = 'application/json';
     let res: Response;
     try {
-      res = await this.fetchImpl(url, {
-        method,
-        headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
-      });
+      res = await this.fetchImpl(url, { method, headers, ...(body !== undefined ? { body } : {}) });
     } catch (err) {
       throw new WireAgentApiError('NETWORK_ERROR', `Could not reach Wire: ${(err as Error)?.message ?? err}`, undefined, undefined, {
         cause: err,
@@ -233,9 +282,13 @@ export class WireAgentClient {
     } catch {
       // Not the API's envelope (a proxy's error page, an empty body).
     }
-    if (!res.ok || !json || json.success !== true) {
+    // `success` is in every envelope Wire sends today; a 2xx without it is read by its `data`.
+    if (!res.ok || !json || json.success === false) {
       const code = json?.error?.code ?? `HTTP_${res.status}`;
       const message = json?.error?.message ?? `Wire answered ${res.status}`;
+      if (res.status === 429 && (code === 'EXPORT_LIMIT' || code === 'export_limit')) {
+        throw new WireExportLimitError(message, retryAfterOf(json?.error?.retryAfter, res.headers), json?.error?.details);
+      }
       throw new WireAgentApiError(code, message, res.status, json?.error?.details);
     }
     if (json.data === undefined || (json.data === null && !opts.allowNullData)) {
@@ -263,6 +316,30 @@ export async function generateRuntimeKey(): Promise<{ privateJwk: JsonWebKey; pu
 
 function requireId(v: unknown, name: string): void {
   if (typeof v !== 'string' || !v) throw new TypeError(`${name} is required`);
+}
+
+/** When an export limit lifts: the error's ISO `retryAfter`, else a `Retry-After` header (seconds or an HTTP date). */
+function retryAfterOf(v: unknown, headers: Headers): Date | null {
+  if (typeof v === 'string' && v) {
+    const d = new Date(v);
+    if (!Number.isNaN(d.getTime())) return d;
+  }
+  const h = headers.get('retry-after')?.trim();
+  if (!h) return null;
+  if (/^\d+$/.test(h)) return new Date(Date.now() + Number(h) * 1000);
+  const d = new Date(h);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function toExport<T>(map: (raw: unknown) => T, raw: unknown): T {
+  try {
+    return map(raw);
+  } catch (err) {
+    if (err instanceof ExportShapeError) {
+      throw new WireAgentApiError('INVALID_RESPONSE', `Wire answered with a malformed export: ${err.message}`, 200);
+    }
+    throw err;
+  }
 }
 
 function toInstall(raw: unknown): WireInstall {

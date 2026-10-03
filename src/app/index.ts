@@ -16,6 +16,7 @@
  * And the agent's own view of its installs (SUP-958):
  *
  *   - new WireAgentClient({ agentId, runtimeKey })  getInstall / listInstalls / revokeInstall
+ *                                                    requestExport / getExport
  *   - verifyWireWebhook(request, { agentId })       verify one install webhook
  *   - defineWebhook(handlers, { agentId })          a verified webhook endpoint
  *   - generateRuntimeKey()                          the key WireAgentClient signs with
@@ -136,6 +137,8 @@ export type { WireAgentClientOptions, WireAppClientOptions, WireRuntimeKey } fro
 export { normalizeRevokedReason } from './installs.js';
 export type { WireInstall, WireInstallRevokedReason } from './installs.js';
 
+export type { WireExport, WireExportRequest, WireExportStatus } from './exports.js';
+
 export {
   CONTAINER_AGENT_MANAGED,
   CONTAINER_APP_MANAGED,
@@ -175,10 +178,12 @@ export type {
 } from './webhook.js';
 
 export {
+  EXPORT_LIMIT,
   WireActionAuthError,
   WireActionError,
   WireAgentApiError,
   WireAppApiError,
+  WireExportLimitError,
   WireManifestError,
   WireWebhookError,
 } from './errors.js';

@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.16.0
+
+- **Export an install's container.** `WireAgentClient` gains two methods, on
+  the same runtime-key auth as the installs API:
+  - `requestExport(installId)` calls
+    `POST /api/v1/agents/{agentId}/installs/{installId}/export` and resolves
+    with `{ exportId, status, createdAt, reused }`.
+  - `getExport(installId, exportId)` calls
+    `GET …/installs/{installId}/exports/{exportId}` and resolves with
+    `{ exportId, status, createdAt, completedAt, expiresAt }`, or `null` for an
+    export your agent did not start on that install.
+  - Wire emails the container's owner when the archive is ready, and
+    downloading it means signing in to Wire. The agent gets an id and a status,
+    never the archive or a download URL.
+  - Limits are per container: one new archive per 24 hours (asking again
+    within that window returns the existing one, `reused: true`), and 5 per
+    calendar month.
+- **New error: `WireExportLimitError`** (`code: "EXPORT_LIMIT"`, status 429),
+  a `WireAgentApiError` with a typed `retryAfter: Date | null`. Its
+  `retryable` is false. Other 429s are unchanged and stay retryable.
+- `requestExport` of a revoked install is refused with 409
+  `AGENT_DISCONNECTED`, and of an unclaimed trial with 409 `INSTALL_IS_TRIAL`,
+  both thrown as `WireAgentApiError` (not `retryable`).
+- New types: `WireExportRequest`, `WireExport`, `WireExportStatus`; new
+  constant `EXPORT_LIMIT`.
+- The client now signs `body_sha256` on `POST` as well as `DELETE`
+  (`signRequestToken('POST', body)`), over the exact bytes sent.
+- A 2xx answer whose envelope has `data` but no `success` field is now read by
+  its `data`. An envelope with `success: false` is still an error.
+
 ## 0.15.2
 
 - **Browser connect finishes in a new tab.** `connectInBrowser()` kept its

@@ -737,8 +737,8 @@ settings or manage page, list that user's installs.
 Your server authenticates with a **runtime key**, an Ed25519 key registered for
 your agent with `purpose: "runtime"`. It is separate from the publisher key that
 registers your manifest, and neither is accepted in place of the other: the key
-a live server holds can read and uninstall your own agent's installs and nothing
-else. Generate one and register its public half:
+a live server holds can read, uninstall and export your own agent's installs and
+nothing else. Generate one and register its public half:
 
 ```typescript
 import { generateRuntimeKey } from '@usewire/sdk/agent';
@@ -817,6 +817,8 @@ leaves `upgradeUrl` out.
 | `getInstall(installId)` | `GET /api/v1/agents/{agentId}/installs/{installId}` | `WireInstall`, or `null` for an install your agent does not have |
 | `listInstalls(agentUserId)` | `GET /api/v1/agents/{agentId}/users/{agentUserId}/installs` | `WireInstall[]`, newest first; `[]` for a user your agent does not know |
 | `revokeInstall(installId)` | `DELETE /api/v1/agents/{agentId}/installs/{installId}` | `WireInstall` (revoked, `uninstalled`) |
+| `requestExport(installId)` | `POST /api/v1/agents/{agentId}/installs/{installId}/export` | `WireExportRequest`. See [Export a container](#export-a-container) |
+| `getExport(installId, exportId)` | `GET /api/v1/agents/{agentId}/installs/{installId}/exports/{exportId}` | `WireExport`, or `null` for an export your agent did not start on that install |
 
 An agent only ever sees its own installs: another agent's ids answer as if they did
 not exist. A revoked install stays readable, with `connection.status:
@@ -830,8 +832,9 @@ defaults, and the data stays. Disconnecting without uninstalling stays a
 dashboard action.
 
 Each call signs a fresh token (`iss` your agent id, `aud: "wire-agent-api"`, a
-60-second lifetime, a single-use `jti`, and on `DELETE` a `body_sha256` of the
-empty body). Before 0.10 the client called `/api/v1/apps/{appId}/...` with
+60-second lifetime, a single-use `jti`, and on `POST` and `DELETE` a
+`body_sha256` of the exact body bytes: `{}` for `requestExport`, the empty
+string for `revokeInstall`). Before 0.10 the client called `/api/v1/apps/{appId}/...` with
 `aud: "wire-app-api"`; Wire still answers those, marked deprecated, and
 `new WireAgentClient({ ..., apiVersion: 'apps' })` selects them for a Wire
 deployment that predates the agent paths. Failures throw `WireAgentApiError`,
@@ -841,10 +844,68 @@ a `WireSdkError` with Wire's `code`, the HTTP `status`, and `retryable`:
 |---|---|---|
 | `UNAUTHORIZED`, `INVALID_TOKEN`, `TOKEN_EXPIRED`, `REPLAY_DETECTED`, `CREDENTIAL_REVOKED`, `RUNTIME_KEY_REQUIRED`, `UNKNOWN_AGENT` | 401 | The key or token was refused (a publish key, a revoked key, a clock more than a minute off) |
 | `AGENT_DISABLED` | 403 | Your agent is disabled |
-| `NOT_FOUND` | 404 | `revokeInstall` of an install your agent does not have, or whose container is gone |
+| `NOT_FOUND` | 404 | `revokeInstall` or `requestExport` of an install your agent does not have, or whose container is gone |
+| `AGENT_DISCONNECTED`, `INSTALL_IS_TRIAL` | 409 | `requestExport` of a revoked install, or of an unclaimed trial. See [Export a container](#export-a-container) |
+| `EXPORT_LIMIT` | 429 | `requestExport`: the container has reached an export limit. Thrown as `WireExportLimitError`, with `retryAfter`. Not `retryable` before then |
 | `CONTAINER_UNAVAILABLE` | 502 | `revokeInstall`: the connections ended but the container could not finish the uninstall yet. `retryable`: call it again |
 | `UNAVAILABLE` | 503 | Wire could not answer. `retryable` |
-| `NETWORK_ERROR`, `HTTP_<status>` | | No answer, or not Wire's. `retryable` for network errors, 429, 502, 503 and 504 |
+| `NETWORK_ERROR`, `HTTP_<status>` | | No answer, or not Wire's. `retryable` for network errors, 429 (other than `EXPORT_LIMIT`), 502, 503 and 504 |
+
+### Export a container
+
+A user who wants their data out can ask your agent for it, and your server can
+ask Wire to export the container on their behalf. Wire builds an archive of the
+container and **emails the container's owner** when it is ready. Downloading it
+means signing in to Wire. Your agent never receives the archive: Wire answers
+with an id and a status, never a download URL, so all your agent can do is tell
+the user the export is on its way.
+
+```typescript
+import { WireExportLimitError } from '@usewire/sdk/agent';
+
+try {
+  const ex = await wire.requestExport(user.wireInstallId);
+  ex.exportId;  // "exp_…": keep it to show progress
+  ex.status;    // "queued" | "running" | "completed" | "failed"
+  ex.createdAt; // Date
+  ex.reused;    // true: an archive from the last 24 hours, not a new one
+  await saveExportId(user, ex.exportId);
+  // "Wire is preparing your export and will email you a link."
+} catch (err) {
+  if (!(err instanceof WireExportLimitError)) throw err;
+  err.retryAfter; // Date (or null if Wire did not say): when a new export is allowed
+  // "You can export again after <retryAfter>."
+}
+
+// Later, to show progress:
+const now = await wire.getExport(user.wireInstallId, user.wireExportId);
+// null if your agent did not start that export on that install
+now?.status;      // "completed" once the archive is built and Wire has emailed the owner
+now?.completedAt; // Date | null
+now?.expiresAt;   // Date | null: when the archive stops being downloadable
+```
+
+**Limits.** Both are per container, not per agent:
+
+- **One new archive per 24 hours.** Asking again within 24 hours of the last
+  archive returns that archive (`reused: true`, its `exportId` and
+  `createdAt`) instead of building another.
+- **5 per container per calendar month.** Past that, `requestExport` throws
+  `WireExportLimitError` (`code: "EXPORT_LIMIT"`, `status: 429`), whose
+  `retryAfter` is when Wire will build a new one.
+
+`WireExportLimitError` is a `WireAgentApiError`, so a catch that already
+handles those still sees it. Its `retryable` is false: calling again before
+`retryAfter` gets the same answer. An install your agent does not have is
+`NOT_FOUND` (404) from `requestExport`, and `null` from `getExport`.
+
+Two installs cannot be exported, and `requestExport` refuses them with a
+`WireAgentApiError` (409, not `retryable`):
+
+| `code` | When | What it means |
+|---|---|---|
+| `AGENT_DISCONNECTED` | The install is revoked: the user disconnected your agent, or it was uninstalled | Exporting through your agent needs an active install: the user reconnects your agent first |
+| `INSTALL_IS_TRIAL` | The install is on an unclaimed trial container | Claim the container first (the install's `claimUrl`), then export |
 
 ### Webhooks
 
