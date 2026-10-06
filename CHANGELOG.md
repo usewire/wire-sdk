@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.17.1
 
 - Docs: Wire now gives a spent refresh token a ten-second grace window. Sent
   again within it, with the same request, it gets the same new tokens back, so
