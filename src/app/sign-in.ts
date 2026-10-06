@@ -159,6 +159,8 @@ export async function pkceChallenge(codeVerifier: string): Promise<string> {
 
 function requireServer(): void {
   // A window with a document is a browser page. A secret used there is a secret given away.
+  // A GUARD AGAINST THE COMMON MISTAKE, NOT A GUARANTEE: a web worker or a mobile app has no such
+  // pair and is not refused here. Nothing a person can read may hold the client secret.
   const g = globalThis as { window?: unknown; document?: unknown };
   if (typeof g.window !== 'undefined' && typeof g.document !== 'undefined') {
     throw new WireSignInError(
@@ -311,7 +313,13 @@ export class WireSignIn {
       if (e instanceof joseErrors.JWKSTimeout || (e instanceof Error && /fetch|network|ECONN|timed? ?out/i.test(e.message) && !(e instanceof joseErrors.JOSEError))) {
         throw new WireSignInError('UNAVAILABLE', "Wire's signing keys could not be fetched", undefined, undefined, { cause: e });
       }
-      throw new WireSignInError('INVALID_ID_TOKEN', `the ID token did not verify: ${(e as Error).message}`, undefined, undefined, { cause: e });
+      // No `cause`: the library's error for a failed claim carries the token's decoded claims
+      // (an email, a name), and an error is something people log.
+      throw new WireSignInError('INVALID_ID_TOKEN', `the ID token did not verify: ${(e as Error).message}`);
+    }
+    // For this agent and nobody else: Wire issues an ID token to one audience.
+    if (Array.isArray(payload.aud) && payload.aud.length !== 1) {
+      throw new WireSignInError('INVALID_ID_TOKEN', 'the ID token names more than one audience');
     }
     if (typeof payload.sub !== 'string' || !AGENT_USER_ID_PATTERN.test(payload.sub)) {
       throw new WireSignInError('INVALID_ID_TOKEN', 'the ID token does not name a per-agent user id');

@@ -239,6 +239,27 @@ describe('the ID token is verified', () => {
     }
   });
 
+  it('refuses a token for more than one audience, and keeps a refused token’s claims out of the error', async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const two = await new SignJWT({ sub: SUB })
+      .setProtectedHeader({ alg: 'EdDSA', kid: wireKey.kid })
+      .setIssuer(BASE)
+      .setAudience([AGENT, 'another-agent'])
+      .setIssuedAt(now)
+      .setExpirationTime(now + 600)
+      .sign(wireKey.privateKey);
+    expect((await err(verify(two))).code).toBe('INVALID_ID_TOKEN');
+    // one audience, as an array of one, is the same token
+    const one = await new SignJWT({ sub: SUB }).setProtectedHeader({ alg: 'EdDSA', kid: wireKey.kid }).setIssuer(BASE).setAudience([AGENT]).setIssuedAt(now).setExpirationTime(now + 600).sign(wireKey.privateKey);
+    expect((await verify(one)).agentUserId).toBe(SUB);
+
+    const expired = await idToken({ exp: now - 3600, claims: { email: 'ada@example.test', name: 'Ada Lovelace' } });
+    const e = await err(verify(expired));
+    const seen = JSON.stringify({ message: e.message, details: e.details, cause: (e as { cause?: unknown }).cause ?? null });
+    expect(seen).not.toContain('ada@example.test');
+    expect(seen).not.toContain('Ada Lovelace');
+  });
+
   it('refuses an unsigned token and one that claims a symmetric algorithm', async () => {
     const b64 = (o: unknown) => Buffer.from(JSON.stringify(o)).toString('base64url');
     const now = Math.floor(Date.now() / 1000);

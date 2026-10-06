@@ -76,7 +76,9 @@ export interface WireAgentEndpointOptions {
   /**
    * The endpoint's origin, when it is not the default: your agent's custom
    * hostname (`https://mcp.yourapp.com`), or preview
-   * (`https://{agentId}.agent-preview.usewire.io`). No path.
+   * (`https://{agentId}.agent-preview.usewire.io`). No path. The person's
+   * access token is sent to this origin, so set it from your own
+   * configuration, never from a request.
    */
   endpoint?: string;
   /** A fetch to use instead of the global one. */

@@ -186,7 +186,9 @@ as them. This is for agents whose manifest declares `access`.
 
 **It runs on your server.** An agent that declares `access` has a client
 secret, and the sign-in is finished with it. So the helpers below are on
-`@usewire/sdk/agent` and refuse to start in a browser page. If your agent does
+`@usewire/sdk/agent` and refuse to start in a browser page. That refusal
+catches the common mistake; it is not a guarantee. Nothing a person can read (a
+web page, a worker, a mobile or desktop app) may hold the secret. If your agent does
 not declare `access`, none of this applies and `connectInBrowser()` works as
 before.
 
@@ -257,21 +259,37 @@ app.get('/auth/wire/start', async (req, res) => {
   res.redirect(request.url);
 });
 
-// GET /auth/wire/callback?code=...&state=...
+// GET /auth/wire/callback?code=...&state=...   (or ?error=...&state=...)
 app.get('/auth/wire/callback', async (req, res) => {
   const kept = req.session.wire;
   if (!kept || req.query.state !== kept.state) return res.status(400).send('This sign-in did not start here.');
   delete req.session.wire;
+  // The person said no, or Wire refused the request.
+  if (typeof req.query.code !== 'string') return res.redirect('/?signin=cancelled');
 
-  const tokens = await wire.exchangeCode({ code: String(req.query.code), codeVerifier: kept.codeVerifier, nonce: kept.nonce });
+  let tokens;
+  try {
+    tokens = await wire.exchangeCode({ code: req.query.code, codeVerifier: kept.codeVerifier, nonce: kept.nonce });
+  } catch (err) {
+    // A code works once: on any failure, the person starts again.
+    return res.redirect('/?signin=failed');
+  }
 
   // tokens.identity is from the ID token, already verified.
   const user = await upsertUser({ wireId: tokens.identity.agentUserId, email: tokens.identity.email });
   await saveTokens(user.id, { accessToken: tokens.accessToken, refreshToken: tokens.refreshToken, expiresAt: tokens.expiresAt });
-  req.session.userId = user.id;
-  res.redirect('/');
+
+  // A NEW session for the signed-in person: never promote the one they arrived with.
+  req.session.regenerate(() => {
+    req.session.userId = user.id;
+    res.redirect('/');
+  });
 });
 ```
+
+Keep the access and refresh tokens on your server, encrypted at rest like any
+other credential, and out of your logs. Pass `nonce` as above: without it the
+ID token is not tied to this sign-in.
 
 What you get back:
 
