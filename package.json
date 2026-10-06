@@ -1,6 +1,6 @@
 {
   "name": "@usewire/sdk",
-  "version": "0.16.0",
+  "version": "0.17.0",
   "description": "Connect Wire context containers to your agent, harness, or AI infrastructure.",
   "license": "MIT",
   "author": "Wire (Superloops LLC)",
@@ -70,6 +70,8 @@
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
+    "esbuild": "^0.28.2",
+    "miniflare": "4.20260730.0",
     "typescript": "^5.9.3",
     "vitest": "^3.0.0"
   }

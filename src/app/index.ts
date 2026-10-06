@@ -190,3 +190,34 @@ export {
 export type { WireActionAuthErrorCode, WireWebhookErrorCode } from './errors.js';
 
 export type { JsonSchema, SchemaIssue } from './schema.js';
+
+/**
+ * Sign in with Wire (an agent whose manifest declares `access`). SERVER ONLY:
+ * these hold your client secret and people's tokens. `WireClient.connectInBrowser()`
+ * is for agents that do NOT declare `access`.
+ */
+export { WireSignIn, WireSignInError, AGENT_USER_ID_PATTERN, pkceChallenge } from './sign-in.js';
+export type {
+  WireAuthorizeRequest,
+  WireIdentity,
+  WireSignInErrorCode,
+  WireSignInOptions,
+  WireSignInScope,
+  WireSignInTokens,
+} from './sign-in.js';
+/** Your agent's endpoint over REST: list and call your tools as a signed-in person. SERVER ONLY. */
+export { WireAgentEndpoint, WireEndpointError } from './endpoint.js';
+export type { WireAgentEndpointOptions, WireEndpointErrorCode, WireEndpointTool, WireToolResult } from './endpoint.js';
+/** What Wire's registration accepts, checked locally the same way; and the claim rule for agents that allow trials. */
+export { validateWireManifest, manifestWarnings, claimMapping, WIRE_CLAIM_TOOL } from './manifest.js';
+export type {
+  ClaimMapping,
+  ManifestAccess,
+  ManifestAccessIdentity,
+  ManifestAccessLevel,
+  ManifestAnalysis,
+  ManifestBuiltinTool,
+  ManifestToolTransports,
+  WireManifestValidation,
+} from './manifest.js';
+export type { ManifestWarning, ValidatedAccess } from '../vendor/manifest/manifest.js';

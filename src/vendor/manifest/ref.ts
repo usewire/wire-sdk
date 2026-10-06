@@ -1,3 +1,3 @@
-// Vendored from usewire/wire@027a1cfcdbc91eeccfcfe465f01e2f88e9b44f6e by scripts/vendor-manifest.sh (bun 1.3.13). Do not edit: change MANIFEST_REF and rerun.
+// Vendored from usewire/wire@c590e34c3d4d9bd0d3c3c9cd8bf4a3ebeab098cb by scripts/vendor-manifest.sh (bun 1.3.13). Do not edit: change MANIFEST_REF and rerun.
 /** The usewire/wire commit the vendored manifest validator was built from. */
-export const MANIFEST_VALIDATOR_REF = '027a1cfcdbc91eeccfcfe465f01e2f88e9b44f6e';
+export const MANIFEST_VALIDATOR_REF = 'c590e34c3d4d9bd0d3c3c9cd8bf4a3ebeab098cb';
