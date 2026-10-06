@@ -384,7 +384,8 @@ await withLock(`wire-refresh:${user.id}`, async () => {
 |---|---|---|
 | New tokens | Yes | Store the new ones. |
 | An error with `tokens` | Yes | Store `err.tokens`. Do not retry. |
-| `UNAVAILABLE` (Wire answered 5xx or 429, or its keys could not be fetched) | No | Retry later with the same token. Wire decides everything before it replaces a token, and this client fetches Wire's keys before it sends yours. |
+| `UNAVAILABLE` (Wire answered 5xx or 429, or its keys could not be fetched) | Almost always no | Retry later with the same token. Wire decides everything before it replaces a token, and this client fetches Wire's keys before it sends yours. The exception is a 502 or 504 produced on the way back after Wire had already answered: the retry then answers `INVALID_GRANT`, and the person signs in again. |
+| `UNEXPECTED_RESPONSE` or `OAUTH_ERROR` without `tokens` | Unknown | Do not retry in a loop. Try once more; if that answers `INVALID_GRANT`, the person signs in again. |
 | `NETWORK_ERROR` | Unknown | Retry once with the same token. If that answers `INVALID_GRANT`, the first request did arrive: the person signs in again. |
 | `INVALID_GRANT` | It was already | The person signs in again. |
 
