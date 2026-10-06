@@ -137,6 +137,9 @@ Browser agents skip the device flow entirely: `connectInBrowser()` sends
 the user through Wire's authorization screen (Authorization Code + PKCE)
 where they pick a container, and your page gets the Connection back.
 
+This is for agents whose manifest does **not** declare `access`. An agent that
+does finishes sign-in on its server: see [Sign in with Wire](#sign-in-with-wire).
+
 ```typescript
 // Starting the flow (your app page):
 await client.connectInBrowser({ redirectUri: 'https://my-app.com/callback' });
@@ -174,6 +177,202 @@ If neither is writable, a redirect-mode `connectInBrowser()` throws
 Register your redirect URIs on the agent in the Wire dashboard first.
 Browser connections have no `deviceKey`; the OAuth grant is the identity.
 See `examples/browser-connect/` for a runnable page.
+
+## Sign in with Wire
+
+A person can sign in to **your own app** with their Wire account. Your app
+learns who they are to your agent, and your server can call your agent's tools
+as them. This is for agents whose manifest declares `access`.
+
+**It runs on your server.** An agent that declares `access` has a client
+secret, and the sign-in is finished with it. So the helpers below are on
+`@usewire/sdk/agent` and refuse to start in a browser page. If your agent does
+not declare `access`, none of this applies and `connectInBrowser()` works as
+before.
+
+### 1. Declare what you ask for
+
+```typescript
+import { defineManifest } from '@usewire/sdk/agent';
+
+export const manifest = defineManifest({
+  manifest: 1,
+  app: {
+    id: 'someday',
+    name: 'Someday',
+    version: '2.0.0',
+    // Required as soon as `identity` asks for anything. Your own page, not one on usewire.io.
+    privacy_policy_url: 'https://someday.example/privacy',
+  },
+  access: {
+    level: 'write',                       // 'none' | 'read' | 'write'
+    read: 'Shows the places you saved.',  // one plain line each, shown at sign-in
+    write: 'Saves places you add.',
+    identity: ['email'],                  // and / or 'profile'
+  },
+  // objects, tools, ...
+});
+```
+
+| `level` | What your app may do in the person's container |
+|---|---|
+| `none` | Nothing. Your app learns who they are and no more. |
+| `read` | Call your tools that do not change a record. |
+| `write` | Call all of your tools. |
+
+The person sees the level, your two lines and the identity fields on the
+sign-in screen, under your agent's name. A later version that raises the level
+or adds an identity field is shown to them again before it applies. A manifest
+whose tools send container records to your server (an `after` action that uses
+the tool's output) may not say `none`.
+
+Your app never reads the container's activity log or its uploaded files, at any
+level.
+
+### 2. Create the client secret
+
+On your agent's page in Wire, under **Sign-in**, create a client secret. It is
+shown once. Put it in your server's secret store. Creating a new one stops the
+old one at once.
+
+Add your server's callback address to the agent's redirect addresses on the
+same page.
+
+### 3. Sign people in, on your server
+
+```typescript
+import { WireSignIn } from '@usewire/sdk/agent';
+
+const wire = new WireSignIn({
+  agentId: 'someday',
+  clientSecret: process.env.WIRE_CLIENT_SECRET!,   // server only
+  redirectUri: 'https://someday.example/auth/wire/callback',
+});
+
+// GET /auth/wire/start
+app.get('/auth/wire/start', async (req, res) => {
+  const request = await wire.createAuthorizeRequest({ scope: ['email', 'offline_access'] });
+  // Keep these three in the person's server-side session.
+  req.session.wire = { state: request.state, codeVerifier: request.codeVerifier, nonce: request.nonce };
+  res.redirect(request.url);
+});
+
+// GET /auth/wire/callback?code=...&state=...
+app.get('/auth/wire/callback', async (req, res) => {
+  const kept = req.session.wire;
+  if (!kept || req.query.state !== kept.state) return res.status(400).send('This sign-in did not start here.');
+  delete req.session.wire;
+
+  const tokens = await wire.exchangeCode({ code: String(req.query.code), codeVerifier: kept.codeVerifier, nonce: kept.nonce });
+
+  // tokens.identity is from the ID token, already verified.
+  const user = await upsertUser({ wireId: tokens.identity.agentUserId, email: tokens.identity.email });
+  await saveTokens(user.id, { accessToken: tokens.accessToken, refreshToken: tokens.refreshToken, expiresAt: tokens.expiresAt });
+  req.session.userId = user.id;
+  res.redirect('/');
+});
+```
+
+What you get back:
+
+- **`identity.agentUserId`** (`au_…`): the person, to your agent. It is the
+  same id your install webhooks and `WireAgentClient` use, it is stable, and it
+  means nothing to any other agent. It is never their Wire user id. Use it as
+  the key for your own user record.
+- **`identity.email`, `emailVerified`, `name`, `picture`**: only what your
+  manifest's `identity` lists and your `scope` asked for.
+- **`accessToken`**: what your server presents to your agent's endpoint (next
+  section). Opaque; keep it on your server.
+- **`refreshToken`**: when you asked for `offline_access`.
+
+`exchangeCode` verifies the ID token before it returns: signed by Wire, issued
+by Wire, for your agent, not expired, and naming a per-agent id. If any of that
+fails it throws `WireSignInError` with `code: 'INVALID_ID_TOKEN'` and nobody is
+signed in.
+
+The request never names a `resource`. Wire refuses one from an agent's own
+client.
+
+### 4. Call your tools as the person
+
+Your agent's endpoint serves two REST paths beside `/mcp`. Your server calls
+them with the person's access token. It never needs a container id: Wire finds
+the person's container from the token.
+
+```typescript
+import { WireAgentEndpoint } from '@usewire/sdk/agent';
+
+const endpoint = new WireAgentEndpoint({ agentId: 'someday' });
+// A custom hostname: new WireAgentEndpoint({ agentId: 'someday', endpoint: 'https://mcp.someday.example' })
+
+const tools = await endpoint.listTools(accessToken);
+// [{ name: 'find_places', description, inputSchema, annotations, ... }, ...]
+
+const { data } = await endpoint.callTool<{ places: Place[] }>(accessToken, 'find_places', { q: 'ramen' });
+```
+
+- `listTools` answers the tools this sign-in may call: at `read`, the ones that
+  do not change a record; at `write`, all of yours; at `none`, an empty list.
+- `callTool` throws `WireEndpointError` with `code: 'TOOL_REFUSED'` and the
+  tool's own message when the tool says no (for example a tool that writes, at
+  level `read`).
+- `code: 'UNAUTHORIZED'` means the access token is no longer good: refresh it.
+- A tool call is billed like the same call over MCP.
+
+### 5. Refresh
+
+```typescript
+try {
+  const next = await wire.refresh(stored.refreshToken);
+  // The refresh token CHANGES every time. Store the new one in place of the old.
+  await saveTokens(user.id, { accessToken: next.accessToken, refreshToken: next.refreshToken, expiresAt: next.expiresAt });
+} catch (err) {
+  if (err instanceof WireSignInError && err.retryable) {
+    // A blip. The refresh token you hold is still good: try again later.
+  } else {
+    // INVALID_GRANT: the person disconnected your agent, or the token is spent. They sign in again.
+  }
+}
+```
+
+Wire checks everything before it replaces a refresh token, so a failed answer
+has not used yours up.
+
+### Moving from in-browser connect to Sign in with Wire
+
+If your app calls `connectInBrowser()` today, the move has one rule: **the
+manifest's `access` block and the server-side exchange ship together.** The
+moment a manifest with `access` is registered, your agent's client needs its
+secret, and `connectInBrowser()` (which finishes in the browser, with no
+secret) stops working for it: it throws `WireSdkError` with
+`code: 'ACCESS_AGENT_NEEDS_SERVER'`.
+
+In order:
+
+1. **Build the server side first, without registering anything new.** Add the
+   two routes above (`/auth/wire/start`, `/auth/wire/callback`), token storage
+   keyed by `identity.agentUserId`, and the calls to `WireAgentEndpoint`.
+   Deploy it dark.
+2. **Create the client secret** on the agent's page and add the server's
+   callback to the redirect addresses.
+3. **Register the manifest with `access`** and switch your app's "connect"
+   button from `connectInBrowser()` to a link to `/auth/wire/start`, in the
+   same release.
+4. People who connected before keep their install and their container. The
+   first time each of them signs in, Wire shows what your manifest asks for and
+   they approve it once, on the container they already use.
+
+What changes in your code:
+
+| Before (`connectInBrowser`) | After (Sign in with Wire) |
+|---|---|
+| The browser finishes the connect and holds a `Connection` with an API key and a container's MCP URL. | Your server finishes the sign-in and holds an access token. The browser holds your own session cookie and nothing of Wire's. |
+| You call the container's own MCP or REST URL with the API key. | You call your agent's endpoint (`GET /tools`, `POST /tools/{name}`) with the access token. No container URL or id. |
+| `connection.agentUserId` identifies the person. | `tokens.identity.agentUserId` does. It is the same id for the same person, so existing user records match. |
+| Every tool, plus the base tools you listed. | Your tools, held to `access.level`. |
+
+A trial (someone with no Wire account) cannot sign in to your app this way:
+signing in to an agent's app needs an account.
 
 ## Turn-based agents (non-blocking)
 
@@ -1080,6 +1279,40 @@ An agent offering trials usually subscribes to two events:
 If they do not claim it, `install.expired` follows, and the container and its
 data are deleted. After `install.expired` and `install.container_deleted`,
 `getInstall` answers `null`.
+
+#### Trials through your agent's endpoint: map the claim
+
+If your agent lets people connect to its endpoint **without an account** (the
+setting on your agent's page), your manifest must give them the way to keep
+their container: exactly one tool of your own that wraps `wire_claim`.
+
+```typescript
+{
+  name: 'keep_my_places',
+  description: 'Keep the places you saved by creating a free account.',
+  inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+  tool: { name: 'wire_claim', args: {} },
+}
+```
+
+- `wire_claim` is never listed in `base_tools`.
+- The tool that wraps it runs no `before` / `after` action and has no `ui`.
+- It must be usable: on, on the MCP transport, and if you give it a `result`
+  mapping, that mapping includes `{{tool.claim_url}}`.
+- Wire lists the tool only while the container is an unclaimed trial.
+
+`defineManifest` checks the first two. The "exactly one, and usable" rule
+depends on your agent's setting, so check it yourself before you register:
+
+```typescript
+import { claimMapping } from '@usewire/sdk/agent';
+
+const mapping = claimMapping(manifest);
+if (!mapping.ok) throw new Error(mapping.message);
+```
+
+Wire refuses to register a manifest that breaks the rule for an agent with the
+setting on, and refuses to turn the setting on for one that does.
 
 ## Runtime
 

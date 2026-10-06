@@ -176,7 +176,6 @@ export declare function splitViewMeta(data: unknown): {
  *
  *    read            reads the container's records (wire_explore, wire_navigate, wire_search, ...)
  *    sql_read        runs read-only SQL over the container's structured records (wire_query)
- *    export          reads every entry in bulk (wire_export)
  *    write           creates or changes records (any base tool that mutates)
  *    delete          deletes records (wire_delete; always with `write`)
  *    app_call        calls one of the app's actions: data named by the mapping leaves the container
@@ -188,7 +187,7 @@ export declare function splitViewMeta(data: unknown): {
  *  TOOL_CAPABILITIES order, so equal tools always produce equal lists. `def` (optional) is the
  *  definition the flow was computed from: a tool with a `before` / `after` step is `app_call` even
  *  when its stored flow is missing, so a lost flow can never understate it. */
-export declare const TOOL_CAPABILITIES: readonly ["read", "sql_read", "export", "write", "delete", "app_call", "app_sets_args", "records_to_app"];
+export declare const TOOL_CAPABILITIES: readonly ["read", "sql_read", "write", "delete", "app_call", "app_sets_args", "records_to_app"];
 export type ToolCapability = (typeof TOOL_CAPABILITIES)[number];
 export declare function toolCapabilities(base: Pick<ToolDef, "name" | "mutates">, dataFlow: CustomToolDataFlow | null | undefined, def?: Pick<CustomToolDefinition, "before" | "after">): ToolCapability[];
 /** Check a JSON Schema against the supported subset (the keywords this module enforces). The

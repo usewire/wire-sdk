@@ -188,6 +188,26 @@ describe('connectInBrowser / completeConnectInBrowser', () => {
     expect(local.getItem(stashKey('state-1'))).toBeNull();
   });
 
+  // An agent whose manifest declares `access` has a client secret; its code is exchanged on its
+  // server (WireSignIn). This exchange has none, and Wire answers `invalid_client`.
+  it('an agent that declares `access` is told to sign people in on its server', async () => {
+    local.setItem(stashKey('state-1'), stashFor('state-1'));
+    vi.stubGlobal(
+      'location',
+      fakeLocation('https://my-agent.example/callback?code=code-1&state=state-1')
+    );
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: 'invalid_client', error_description: 'client authentication failed' }), { status: 401 })
+    );
+
+    await expect(client.completeConnectInBrowser()).rejects.toMatchObject({
+      code: 'ACCESS_AGENT_NEEDS_SERVER',
+      status: 401,
+      message: expect.stringContaining('WireSignIn'),
+    });
+    expect(local.getItem(stashKey('state-1'))).toBeNull();
+  });
+
   it('throws CONNECT_STATE_LOST for an expired stash, and removes it', async () => {
     local.setItem(stashKey('state-1'), stashFor('state-1', Date.now() - 11 * 60 * 1000));
     vi.stubGlobal(

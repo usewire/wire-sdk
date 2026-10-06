@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.17.0
+
+- **Sign in with Wire.** Two new server-side clients on `@usewire/sdk/agent`,
+  for an agent whose manifest declares `access`:
+  - `WireSignIn`: `createAuthorizeRequest()` / `authorizeUrl()` (a code flow
+    with PKCE that never names a `resource`), `exchangeCode()` and `refresh()`
+    (authenticated with your client secret), `verifyIdToken()` and
+    `userInfo()`. The ID token is verified against Wire's published keys
+    (EdDSA, issuer, audience, expiry) and its `sub` must be a per-agent user id
+    (`au_…`). It refuses to be constructed in a browser page.
+  - `WireAgentEndpoint`: `listTools(accessToken)` and
+    `callTool(accessToken, name, args)` against your agent's own hostname
+    (`GET /tools`, `POST /tools/{name}`).
+  - New errors `WireSignInError` and `WireEndpointError`, each with a typed
+    `code` and a `retryable` flag.
+- **The manifest validator matches what Wire accepts today.** The vendored
+  validator moves to the engine commit Wire runs
+  (`c590e34c3d4d9bd0d3c3c9cd8bf4a3ebeab098cb`), and `defineManifest` now
+  checks a manifest the way Wire's registration does:
+  - `access` (`level`, `read`, `write`, `identity`) and
+    `app.privacy_policy_url` are accepted. 0.16.0 refused both. A privacy
+    policy is required when `access.identity` asks for anything.
+  - A tool of your own may wrap `wire_claim`. 0.16.0 refused it as an unknown
+    tool, though Wire requires it of an agent that allows connecting without an
+    account.
+  - Two of Wire's own rules are now checked locally, with Wire's messages:
+    `wire_claim` is never in `base_tools` and its wrapping tool runs no action
+    and has no view; `app.privacy_policy_url` is never on usewire.io.
+  - The retired built-in tool name `wire_export` is accepted and ignored.
+- **New: `validateWireManifest(raw)`**, the non-throwing form of the above. It
+  answers the normalized manifest, `access` with every key filled, and
+  `warnings` (today: `access_undeclared`, a manifest whose tools send records
+  to your server while it has no `access` block). `manifestWarnings(manifest)`
+  answers the warnings alone. The engine's `validateManifest` is still
+  exported, unchanged; on its own it does not know `wire_claim`.
+- **New: `claimMapping(manifest)`**, the rule for an agent that lets people
+  connect without an account: exactly one usable tool wraps `wire_claim`.
+- **Manifest types now cover the whole contract:** `access`,
+  `app.privacy_policy_url`, `analysis`, `builtin_tools`, and a tool's `enabled`
+  and `transports`. Wire already accepted the last four; the types did not let
+  you write them.
+- **`connectInBrowser()` on an agent that declares `access`** now throws
+  `WireSdkError` with `code: 'ACCESS_AGENT_NEEDS_SERVER'` and says what to use
+  instead. Before, it surfaced Wire's `invalid_client` as a generic
+  `OAUTH_ERROR`. `connectInBrowser()` is unchanged for every other agent.
+- README: "Sign in with Wire", including moving an agent from in-browser
+  connect, and mapping the claim for trials.
+
 ## 0.16.0
 
 - **Export an install's container.** `WireAgentClient` gains two methods, on

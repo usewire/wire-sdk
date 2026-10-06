@@ -504,6 +504,16 @@ export class WireClient {
         app_user_id?: string | null;
       };
     };
+    // An agent whose manifest declares `access` has a client secret, and its code is exchanged
+    // on its server with that secret (`WireSignIn`, on `@usewire/sdk/agent`). This exchange has
+    // none, so Wire refuses it as an unknown client. Say what to do instead of what failed.
+    if (json.error === 'invalid_client') {
+      throw new WireSdkError(
+        'ACCESS_AGENT_NEEDS_SERVER',
+        'This agent\'s manifest declares `access`, so people sign in to it through your server: use WireSignIn from "@usewire/sdk/agent" there. connectInBrowser() is for agents that do not declare `access`.',
+        res.status
+      );
+    }
     if (!res.ok || json.error) {
       throw new WireSdkError(
         'OAUTH_ERROR',

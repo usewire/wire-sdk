@@ -87,6 +87,75 @@ export interface ManifestAnalysis {
     /** The entity graph (canonical entities, mentions, related_via). */
     entity?: boolean;
 }
+/** How far an app may reach into a person's container on their behalf, in ascending order. */
+export declare const ACCESS_LEVELS: readonly ["none", "read", "write"];
+export type AccessLevel = (typeof ACCESS_LEVELS)[number];
+/** The identity fields an app may ask for beside its per-app user id, in the order they are reported. */
+export declare const ACCESS_IDENTITY_FIELDS: readonly ["email", "profile"];
+export type AccessIdentityField = (typeof ACCESS_IDENTITY_FIELDS)[number];
+/** A level description's ceiling. It is one line of consent copy, not documentation. */
+export declare const ACCESS_DESCRIPTION_MAX = 200;
+/** What an app asks for when a person signs in to the app itself. Every key but `level` is optional. */
+export interface ManifestAccess {
+    level: AccessLevel;
+    /** What reading is for, in the developer's words. Only with level "read" or "write". */
+    read?: string;
+    /** What writing is for, in the developer's words. Only with level "write". */
+    write?: string;
+    /** Identity fields asked for beside the per-app user id. */
+    identity?: AccessIdentityField[];
+}
+/** `access` as a consent screen needs it: every key present, whatever the manifest stated. */
+export interface ValidatedAccess {
+    /** Does the manifest carry an `access` block at all? */
+    declared: boolean;
+    level: AccessLevel;
+    /** The developer's description of each level the manifest is granted, when it gave one. Never a
+     *  description for a level above `level`. Plain text: show it as text, attributed to the app. */
+    descriptions: {
+        read?: string;
+        write?: string;
+    };
+    /** The identity fields asked for, in `ACCESS_IDENTITY_FIELDS` order, without repeats. */
+    identity: AccessIdentityField[];
+    /** The tools that send container records to the app's own server (an `after` action receives
+     *  the base tool's output). Empty when none does, and when the tools were not given. */
+    sendsRecordsToApp: string[];
+    /** The manifest states NO level while a tool sends container records to the app: it reads the
+     *  container without saying so. Not an error (such manifests predate `access` and still
+     *  validate), but a consent screen built from `level` alone would understate it. Never true for a
+     *  manifest with an `access` block: there the validator refuses level "none". */
+    undeclaredRead: boolean;
+}
+/** Something a valid manifest should fix. Reported beside the validation, never a refusal. */
+export interface ManifestWarning {
+    code: "access_undeclared";
+    path: string;
+    message: string;
+}
+/** A manifest's `access`, with every key filled. No block means level "none" and no identity
+ *  fields: exactly what a manifest written before `access` existed asks for. */
+export declare function manifestAccess(m: Pick<ConnectManifest, "access"> | null | undefined, 
+/** The manifest's validated tools, when in hand: what `sendsRecordsToApp` is read from. */
+tools?: Array<Pick<ValidatedManifestTool, "definition" | "capabilities">>): ValidatedAccess;
+/** What moving from one manifest's `access` to another's ADDS: a higher level, and identity fields
+ *  not asked for before. A person who approved `from` has not approved either. Lowering the level,
+ *  dropping a field, or rewording a description widens nothing. */
+export interface AccessChange {
+    from: AccessLevel;
+    to: AccessLevel;
+    /** Is `to` a higher level than `from`? */
+    raisesLevel: boolean;
+    /** Identity fields `to` asks for and `from` did not. */
+    addsIdentity: AccessIdentityField[];
+    /** Does anything widen? `raisesLevel` or a non-empty `addsIdentity`. */
+    widens: boolean;
+}
+export declare function accessChange(from: Pick<ConnectManifest, "access"> | null | undefined, to: Pick<ConnectManifest, "access"> | null | undefined): AccessChange;
+/** Why a level description is not acceptable, or null. It is shown to a person deciding whether to
+ *  trust the app, under the app's name, so it is one line of plain text: no markup, no links, no
+ *  control characters. A renderer must still show it as text; this keeps what it shows honest. */
+export declare function accessDescriptionProblem(raw: unknown): string | null;
 /** `analysis`, normalized: both keys, booleans. What apply returns as `requestedAnalysis`. */
 export interface RequestedAnalysis {
     provenance: boolean;
@@ -127,6 +196,7 @@ export interface ConnectManifest {
         id: string;
         name: string;
         version: string;
+        privacy_policy_url?: string;
     };
     objects: ManifestObject[];
     actions: ManifestAction[];
@@ -134,6 +204,7 @@ export interface ConnectManifest {
     base_tools: string[];
     builtin_tools?: Record<string, ManifestBuiltinTool>;
     analysis?: ManifestAnalysis;
+    access?: ManifestAccess;
     instructions?: string;
     skill?: string;
     ui?: UiResource[];
@@ -192,6 +263,10 @@ export type ManifestValidation = {
     manifest: ConnectManifest;
     tools: ValidatedManifestTool[];
     builtinTools: ValidatedBuiltinTool[];
+    /** What the manifest asks for at sign-in, every key filled (`manifestAccess`). */
+    access: ValidatedAccess;
+    /** Things the manifest should fix that do not make it invalid. Usually empty. */
+    warnings: ManifestWarning[];
 } | {
     ok: false;
     errors: ValidationError[];
