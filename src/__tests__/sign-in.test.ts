@@ -3,15 +3,15 @@
  * Wire's authorization server (discovery, keys, the token endpoint, userinfo)
  * behind an injected fetch.
  */
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { exportJWK, generateKeyPair, SignJWT } from 'jose';
 import { AGENT_USER_ID_PATTERN, pkceChallenge, WireSignIn, WireSignInError } from '../app/index.js';
 
 const BASE = 'https://app.usewire.io';
 const AGENT = 'someday';
-const SECRET = 'sk_test_0123456789abcdefghij';
+const SECRET = 'wcs_00000000000000000000000000000000fake';
 const REDIRECT = 'https://someday.example/auth/callback';
-const SUB = 'au_AbCdEfGhIjKlMnOpQrStUvWx';
+const SUB = 'au_0123456789abcdefghijklmn';
 
 type Key = { privateKey: CryptoKey; jwk: Record<string, unknown>; kid: string };
 let wireKey: Key;
@@ -45,6 +45,8 @@ let tokenAnswer: () => Promise<Response> | Response;
 let discovery: Record<string, unknown> | null;
 let discoveryStatus: number;
 let userinfoAnswer: () => Response;
+let jwksStatus: number;
+let jwksKeys: () => unknown[];
 
 const json = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
   new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...headers } });
@@ -55,7 +57,7 @@ const fetchStub: typeof fetch = async (input, init) => {
   calls.push({ url, method: init?.method ?? 'GET', headers, body: typeof init?.body === 'string' ? init.body : '' });
   const path = new URL(url).pathname;
   if (path === '/.well-known/openid-configuration') return discovery ? json(discovery, discoveryStatus) : new Response('nope', { status: discoveryStatus });
-  if (path === '/api/auth/jwks') return json({ keys: [wireKey.jwk] });
+  if (path === '/api/auth/jwks') return jwksStatus === 200 ? json({ keys: jwksKeys() }) : new Response('unavailable', { status: jwksStatus });
   if (path === '/api/auth/oauth2/token') return tokenAnswer();
   if (path === '/api/auth/oauth2/userinfo') return userinfoAnswer();
   return new Response('not found', { status: 404 });
@@ -82,6 +84,8 @@ beforeEach(() => {
   discoveryStatus = 200;
   tokenAnswer = async () => json({ access_token: 'opaque-access', token_type: 'Bearer', expires_in: 3600, refresh_token: 'opaque-refresh', id_token: await idToken(), scope: 'openid offline_access' });
   userinfoAnswer = () => json({ sub: SUB });
+  jwksStatus = 200;
+  jwksKeys = () => [wireKey.jwk];
 });
 
 describe('the authorize request', () => {
@@ -127,7 +131,7 @@ describe('the authorize request', () => {
 describe('the code exchange', () => {
   it('authenticates with the client secret, sends the verifier, and answers verified tokens', async () => {
     const before = Date.now();
-    const tokens = await client().exchangeCode({ code: 'the-code', codeVerifier: 'the-verifier' });
+    const tokens = await client().exchangeCode({ code: 'the-code', codeVerifier: 'the-verifier', nonce: false });
     expect(tokens).toMatchObject({ accessToken: 'opaque-access', refreshToken: 'opaque-refresh', scope: ['openid', 'offline_access'], identity: { agentUserId: SUB } });
     expect(tokens.identity.agentUserId).toMatch(AGENT_USER_ID_PATTERN);
     expect(tokens.expiresAt.getTime()).toBeGreaterThanOrEqual(before + 3600_000 - 5);
@@ -145,17 +149,17 @@ describe('the code exchange', () => {
   });
 
   it('a secret with characters that need encoding is form-encoded before base64', async () => {
-    await client({ clientSecret: 'p@ss:word/with+odd=chars!!' }).exchangeCode({ code: 'c', codeVerifier: 'v' });
+    await client({ clientSecret: 'p@ss:word/with+odd=chars!!' }).exchangeCode({ code: 'c', codeVerifier: 'v', nonce: false });
     expect(atob(tokenCalls()[0]!.headers.get('authorization')!.slice(6))).toBe(`${AGENT}:${encodeURIComponent('p@ss:word/with+odd=chars!!')}`);
   });
 
   it('identity fields come from the verified ID token, and only when it carries them', async () => {
     tokenAnswer = async () => json({ access_token: 'a', expires_in: 60, id_token: await idToken({ claims: { email: 'ada@example.test', email_verified: true, name: 'Ada', picture: 'https://img.example/a.png' } }) });
-    const t = await client().exchangeCode({ code: 'c', codeVerifier: 'v' });
+    const t = await client().exchangeCode({ code: 'c', codeVerifier: 'v', nonce: false });
     expect(t.identity).toMatchObject({ agentUserId: SUB, email: 'ada@example.test', emailVerified: true, name: 'Ada', picture: 'https://img.example/a.png' });
     expect(t.refreshToken).toBeNull();
     tokenAnswer = async () => json({ access_token: 'a', expires_in: 60, id_token: await idToken() });
-    const bare = await client().exchangeCode({ code: 'c', codeVerifier: 'v' });
+    const bare = await client().exchangeCode({ code: 'c', codeVerifier: 'v', nonce: false });
     expect('email' in bare.identity).toBe(false);
     expect('name' in bare.identity).toBe(false);
   });
@@ -164,6 +168,28 @@ describe('the code exchange', () => {
     tokenAnswer = async () => json({ access_token: 'a', expires_in: 60, id_token: await idToken({ claims: { nonce: 'the-one-i-kept' } }) });
     await expect(client().exchangeCode({ code: 'c', codeVerifier: 'v', nonce: 'the-one-i-kept' })).resolves.toBeTruthy();
     expect((await err(client().exchangeCode({ code: 'c', codeVerifier: 'v', nonce: 'another' }))).code).toBe('INVALID_ID_TOKEN');
+  });
+
+  it('the nonce is required; leaving it out is an explicit choice, and nothing is sent without one', async () => {
+    for (const bad of [{ code: 'c', codeVerifier: 'v' }, { code: 'c', codeVerifier: 'v', nonce: '' }, { code: 'c', codeVerifier: 'v', nonce: undefined }]) {
+      const e = await err(client().exchangeCode(bad as never));
+      expect(e.code).toBe('INVALID_ARGUMENT');
+      expect(e.message).toContain('nonce');
+    }
+    expect(tokenCalls()).toHaveLength(0);
+    await expect(client().exchangeCode({ code: 'c', codeVerifier: 'v', nonce: false })).resolves.toBeTruthy();
+  });
+
+  it('Wire’s keys are fetched BEFORE the code is spent: when they cannot be, the code is never sent', async () => {
+    jwksStatus = 503;
+    const e = await err(client().exchangeCode({ code: 'c', codeVerifier: 'v', nonce: false }));
+    expect(e).toMatchObject({ code: 'UNAVAILABLE', retryable: true });
+    expect(tokenCalls()).toHaveLength(0);
+    // the order on a good day: configuration, keys, then the token request
+    jwksStatus = 200;
+    calls = [];
+    await client().exchangeCode({ code: 'c', codeVerifier: 'v', nonce: false });
+    expect(calls.map((c) => new URL(c.url).pathname)).toEqual(['/.well-known/openid-configuration', '/api/auth/jwks', '/api/auth/oauth2/token']);
   });
 
   it('maps Wire’s refusals: a bad grant, a bad secret, a blip, anything else', async () => {
@@ -180,7 +206,7 @@ describe('the code exchange', () => {
     ];
     for (const [answer, code, retryable] of cases) {
       tokenAnswer = answer;
-      const e = await err(client().exchangeCode({ code: 'c', codeVerifier: 'v' }));
+      const e = await err(client().exchangeCode({ code: 'c', codeVerifier: 'v', nonce: false }));
       expect(e.code, code).toBe(code);
       expect(e.retryable, code).toBe(retryable);
       expect(e.message).not.toContain(SECRET);
@@ -189,7 +215,7 @@ describe('the code exchange', () => {
 
   it('a request that never reaches Wire is NETWORK_ERROR, retryable', async () => {
     const c = new WireSignIn({ agentId: AGENT, clientSecret: SECRET, redirectUri: REDIRECT, fetch: (async () => { throw new TypeError('fetch failed'); }) as never });
-    const e = await err(c.exchangeCode({ code: 'c', codeVerifier: 'v' }));
+    const e = await err(c.exchangeCode({ code: 'c', codeVerifier: 'v', nonce: false }));
     expect(e.code).toBe('NETWORK_ERROR');
     expect(e.retryable).toBe(true);
   });
@@ -205,13 +231,132 @@ describe('refresh', () => {
     expect(call!.headers.get('authorization')).toMatch(/^Basic /);
   });
 
-  it('a blip is retryable with the same token; a spent or revoked one means signing in again', async () => {
+  it('a blip Wire ANSWERED is retryable with the same token; a spent or revoked one means signing in again', async () => {
     tokenAnswer = () => json({ error: 'temporarily_unavailable' }, 503);
-    expect((await err(client().refresh('r'))).retryable).toBe(true);
+    const blip = await err(client().refresh('r'));
+    expect(blip.retryable).toBe(true);
+    expect(blip.tokens).toBeUndefined();
     tokenAnswer = () => json({ error: 'invalid_grant' }, 400);
     const e = await err(client().refresh('r'));
     expect(e.code).toBe('INVALID_GRANT');
     expect(e.retryable).toBe(false);
+  });
+
+  // Wire replaces the refresh token before this client sees the answer. From that moment the
+  // one that was sent is spent, and sending it again signs the person out. So nothing after the
+  // answer may lose the new one.
+  it('NO ID TOKEN IN THE ANSWER (Wire may leave it out of a refresh): the new tokens, and no identity', async () => {
+    tokenAnswer = () => json({ access_token: 'access-2', expires_in: 3600, refresh_token: 'refresh-2', scope: 'openid offline_access' });
+    const t = await client().refresh('refresh-1');
+    expect(t).toMatchObject({ accessToken: 'access-2', refreshToken: 'refresh-2', idToken: null, identity: null });
+  });
+
+  it('WIRE’S KEYS ARE FETCHED BEFORE THE TOKEN IS SENT: when they cannot be, the refresh token is not spent', async () => {
+    for (const status of [503, 404, 500]) {
+      jwksStatus = status;
+      const e = await err(client().refresh('refresh-1'));
+      expect(e, String(status)).toMatchObject({ code: 'UNAVAILABLE', retryable: true });
+      expect(e.tokens).toBeUndefined();
+    }
+    expect(tokenCalls()).toHaveLength(0);
+    // unreachable, not just a bad status
+    const down = new WireSignIn({
+      agentId: AGENT,
+      clientSecret: SECRET,
+      redirectUri: REDIRECT,
+      fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input).endsWith('/api/auth/jwks')) throw new TypeError('fetch failed');
+        return fetchStub(input, init);
+      }) as never,
+    });
+    expect(await err(down.refresh('refresh-1'))).toMatchObject({ code: 'UNAVAILABLE', retryable: true });
+    expect(tokenCalls()).toHaveLength(0);
+    // and a failure is not remembered: the next call fetches the keys and goes through
+    jwksStatus = 200;
+    const c = client();
+    jwksStatus = 503;
+    await err(c.refresh('refresh-1'));
+    jwksStatus = 200;
+    expect((await c.refresh('refresh-1')).refreshToken).toBe('opaque-refresh');
+  });
+
+  it('AN ID TOKEN THAT DOES NOT VERIFY AFTER THE ANSWER: the error carries the new tokens, and says not to retry', async () => {
+    tokenAnswer = async () => json({ access_token: 'access-2', expires_in: 3600, refresh_token: 'refresh-2', id_token: await idToken({ key: otherKey }), scope: 'openid' });
+    const e = await err(client().refresh('refresh-1'));
+    expect(e.code).toBe('INVALID_ID_TOKEN');
+    expect(e.retryable).toBe(false);
+    expect(e.tokens).toMatchObject({ accessToken: 'access-2', refreshToken: 'refresh-2', identity: null, idToken: null });
+    expect(e.message).toContain('store them');
+    // the tokens are not something a log of the error shows
+    expect(JSON.stringify(e)).not.toContain('refresh-2');
+    expect(Object.keys(e)).not.toContain('tokens');
+  });
+
+  it('the keys rotate between the pre-fetch and the answer and cannot be re-fetched: UNAVAILABLE, with the tokens, not retryable', async () => {
+    const c = client();
+    await c.refresh('refresh-0'); // the key set is loaded and held
+    const newKey = await makeKey('wire-key-2');
+    tokenAnswer = async () => json({ access_token: 'access-3', expires_in: 3600, refresh_token: 'refresh-3', id_token: await idToken({ key: newKey }) });
+    // Later: the library re-fetches the key set for a key id it has not seen (it will not do so
+    // again within seconds of the last fetch).
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(Date.now() + 10 * 60 * 1000);
+    try {
+      jwksStatus = 503; // the re-fetch fails
+      const e = await err(c.refresh('refresh-2'));
+      expect(e.code).toBe('UNAVAILABLE');
+      expect(e.retryable).toBe(false); // Wire answered: the token that was sent is spent
+      expect(e.tokens).toMatchObject({ accessToken: 'access-3', refreshToken: 'refresh-3' });
+      // and when the re-fetch works, the new key is simply picked up
+      jwksStatus = 200;
+      jwksKeys = () => [wireKey.jwk, newKey.jwk];
+      vi.setSystemTime(Date.now() + 10 * 60 * 1000);
+      expect((await c.refresh('refresh-3')).identity?.agentUserId).toBe(SUB);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a code exchange is different: with no verified ID token nobody is signed in, and no tokens are handed over', async () => {
+    tokenAnswer = async () => json({ access_token: 'a', expires_in: 60, refresh_token: 'r', id_token: await idToken({ key: otherKey }) });
+    const e = await err(client().exchangeCode({ code: 'c', codeVerifier: 'v', nonce: false }));
+    expect(e.code).toBe('INVALID_ID_TOKEN');
+    expect(e.tokens).toBeUndefined();
+    tokenAnswer = () => json({ access_token: 'a', expires_in: 60 });
+    expect((await err(client().exchangeCode({ code: 'c', codeVerifier: 'v', nonce: false }))).code).toBe('UNEXPECTED_RESPONSE');
+  });
+});
+
+describe('redirects are never followed', () => {
+  it('every request says `manual` (Cloudflare Workers refuses `error`), and a redirect answer is an error, not a new destination', async () => {
+    const seen: Array<{ url: string; redirect: unknown }> = [];
+    const recording: typeof fetch = async (input, init) => {
+      seen.push({ url: String(input), redirect: init?.redirect });
+      return fetchStub(input, init);
+    };
+    const c = client({ fetch: recording });
+    await c.exchangeCode({ code: 'c', codeVerifier: 'v', nonce: false });
+    await c.refresh('r');
+    await c.userInfo('a');
+    expect(seen.length).toBeGreaterThanOrEqual(5);
+    for (const call of seen) expect(call.redirect, call.url).toBe('manual');
+
+    for (const status of [301, 302, 307, 308]) {
+      tokenAnswer = () => new Response(null, { status, headers: { location: 'https://evil.example/token' } });
+      calls = [];
+      const e = await err(client().refresh('r'));
+      expect(e, String(status)).toMatchObject({ code: 'UNEXPECTED_RESPONSE', retryable: false });
+      // nothing was sent to where the redirect pointed
+      expect(calls.some((x) => x.url.includes('evil.example'))).toBe(false);
+    }
+    userinfoAnswer = () => new Response(null, { status: 302, headers: { location: 'https://evil.example/me' } });
+    expect((await err(client().userInfo('a'))).code).toBe('UNEXPECTED_RESPONSE');
+  });
+
+  it('an opaque redirect (what a browser-like runtime hands back for `manual`) is the same error', async () => {
+    const opaque = { type: 'opaqueredirect', status: 0, ok: false, headers: new Headers(), json: async () => null } as unknown as Response;
+    const c = new WireSignIn({ agentId: AGENT, clientSecret: SECRET, redirectUri: REDIRECT, fetch: (async () => opaque) as never });
+    expect((await err(c.userInfo('a'))).code).toBe('UNEXPECTED_RESPONSE');
   });
 });
 
@@ -220,6 +365,24 @@ describe('the ID token is verified', () => {
 
   it('a token Wire signed for this agent verifies', async () => {
     expect((await verify(await idToken())).agentUserId).toBe(SUB);
+  });
+
+  it('the subject pattern is Wire’s own: lowercase letters and digits, 16 to 48 of them', async () => {
+    expect(AGENT_USER_ID_PATTERN.source).toBe('^au_[0-9a-z]{16,48}$');
+    for (const sub of ['au_0123456789abcdef', `au_${'a'.repeat(48)}`, 'au_00000000000000000000000a']) {
+      expect((await verify(await idToken({ claims: { sub } }))).agentUserId, sub).toBe(sub);
+    }
+    for (const sub of ['au_ABCDEFGHIJKLMNOPQRSTUVWX', 'au_0123456789abcde', `au_${'a'.repeat(49)}`, 'ins_0123456789abcdefghijklmn', 'au_0123456789abcdef-']) {
+      expect((await err(verify(await idToken({ claims: { sub } })))).code, sub).toBe('INVALID_ID_TOKEN');
+    }
+  });
+
+  it('a key set that answers anything but 200 is UNAVAILABLE, never "the token is bad"', async () => {
+    jwksStatus = 500;
+    expect(await err(verify(await idToken()))).toMatchObject({ code: 'UNAVAILABLE', retryable: true });
+    jwksStatus = 200;
+    // a token signed by a key Wire does not publish IS a bad token
+    expect((await err(verify(await idToken({ key: otherKey })))).code).toBe('INVALID_ID_TOKEN');
   });
 
   it('refuses a wrong signer, issuer, audience, an expired token, and a subject that is not a per-agent id', async () => {
@@ -272,7 +435,7 @@ describe('the ID token is verified', () => {
 
   it('a token answer whose ID token does not verify signs nobody in', async () => {
     tokenAnswer = async () => json({ access_token: 'a', expires_in: 60, id_token: await idToken({ key: otherKey }) });
-    expect((await err(client().exchangeCode({ code: 'c', codeVerifier: 'v' }))).code).toBe('INVALID_ID_TOKEN');
+    expect((await err(client().exchangeCode({ code: 'c', codeVerifier: 'v', nonce: false }))).code).toBe('INVALID_ID_TOKEN');
   });
 
   it('trusts only Wire’s own origin for the issuer and the keys', async () => {
@@ -361,7 +524,7 @@ describe('it is a server-side client', () => {
     expect(JSON.stringify(c)).not.toContain(SECRET);
     expect(Object.keys(c)).not.toContain('clientSecret');
     tokenAnswer = () => json({ error: 'invalid_client', error_description: 'bad credentials' }, 401);
-    const e = await err(c.exchangeCode({ code: 'c', codeVerifier: 'v' }));
+    const e = await err(c.exchangeCode({ code: 'c', codeVerifier: 'v', nonce: false }));
     expect(JSON.stringify({ message: e.message, details: e.details, code: e.code })).not.toContain(SECRET);
   });
 });

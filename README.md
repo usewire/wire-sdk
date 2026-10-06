@@ -186,9 +186,13 @@ as them. This is for agents whose manifest declares `access`.
 
 **It runs on your server.** An agent that declares `access` has a client
 secret, and the sign-in is finished with it. So the helpers below are on
-`@usewire/sdk/agent` and refuse to start in a browser page. That refusal
-catches the common mistake; it is not a guarantee. Nothing a person can read (a
-web page, a worker, a mobile or desktop app) may hold the secret. If your agent does
+`@usewire/sdk/agent`. They run on Node 18+, Cloudflare Workers, Bun and Deno.
+
+`WireSignIn` refuses to be constructed when both `window` and `document`
+exist, which is a browser page. That catches the common mistake and nothing
+else: it does not notice a web worker, a service worker, a React Native app or
+any other place a person could read your code. Nothing a person can read may
+hold the client secret. If your agent does
 not declare `access`, none of this applies and `connectInBrowser()` works as
 before.
 
@@ -288,8 +292,9 @@ app.get('/auth/wire/callback', async (req, res) => {
 ```
 
 Keep the access and refresh tokens on your server, encrypted at rest like any
-other credential, and out of your logs. Pass `nonce` as above: without it the
-ID token is not tied to this sign-in.
+other credential, and out of your logs. `exchangeCode` requires the `nonce`
+from `createAuthorizeRequest()`: it ties the ID token to this sign-in. (Pass
+`nonce: false` only if you built the authorize URL yourself without one.)
 
 What you get back:
 
@@ -339,22 +344,49 @@ const { data } = await endpoint.callTool<{ places: Place[] }>(accessToken, 'find
 
 ### 5. Refresh
 
+A refresh token works **once**. The moment Wire answers a refresh with new
+tokens, the one you sent is spent, and **sending a spent refresh token again
+signs the person out of your agent**: Wire treats it as a stolen token and
+ends every token your agent holds for them. So a refresh has three rules.
+
+1. **One at a time per person.** Take a lock (or use a single worker) around
+   the read, the refresh and the write. Two refreshes at once with the same
+   token is a spent token sent twice.
+2. **Store the new tokens before anything else**, including when the call
+   throws: if the error has `tokens`, Wire had already answered.
+3. **Retry only what is safe to retry.**
+
 ```typescript
-try {
-  const next = await wire.refresh(stored.refreshToken);
-  // The refresh token CHANGES every time. Store the new one in place of the old.
-  await saveTokens(user.id, { accessToken: next.accessToken, refreshToken: next.refreshToken, expiresAt: next.expiresAt });
-} catch (err) {
-  if (err instanceof WireSignInError && err.retryable) {
-    // A blip. The refresh token you hold is still good: try again later.
-  } else {
-    // INVALID_GRANT: the person disconnected your agent, or the token is spent. They sign in again.
+await withLock(`wire-refresh:${user.id}`, async () => {
+  const stored = await loadTokens(user.id);          // read inside the lock
+  try {
+    const next = await wire.refresh(stored.refreshToken);
+    await saveTokens(user.id, { accessToken: next.accessToken, refreshToken: next.refreshToken, expiresAt: next.expiresAt });
+    // next.identity is null when Wire sent no ID token with a refresh: keep the identity you have.
+  } catch (err) {
+    if (!(err instanceof WireSignInError)) throw err;
+    if (err.tokens) {
+      // Wire HAD answered: the old refresh token is spent. Store the new ones first.
+      await saveTokens(user.id, { accessToken: err.tokens.accessToken, refreshToken: err.tokens.refreshToken, expiresAt: err.tokens.expiresAt });
+      return; // the tokens are good; only the ID token could not be checked this time
+    }
+    if (err.code === 'INVALID_GRANT' || err.code === 'INVALID_CLIENT') {
+      return signOut(user.id);                        // they sign in again
+    }
+    if (err.code === 'UNAVAILABLE') throw err;        // Wire answered "not now": the token is NOT spent, retry later
+    if (err.code === 'NETWORK_ERROR') throw err;      // may or may not have arrived: see below
+    throw err;
   }
-}
+});
 ```
 
-Wire checks everything before it replaces a refresh token, so a failed answer
-has not used yours up.
+| The call ended with | Is your refresh token spent? | What to do |
+|---|---|---|
+| New tokens | Yes | Store the new ones. |
+| An error with `tokens` | Yes | Store `err.tokens`. Do not retry. |
+| `UNAVAILABLE` (Wire answered 5xx or 429, or its keys could not be fetched) | No | Retry later with the same token. Wire decides everything before it replaces a token, and this client fetches Wire's keys before it sends yours. |
+| `NETWORK_ERROR` | Unknown | Retry once with the same token. If that answers `INVALID_GRANT`, the first request did arrive: the person signs in again. |
+| `INVALID_GRANT` | It was already | The person signs in again. |
 
 ### Moving from in-browser connect to Sign in with Wire
 
@@ -363,7 +395,8 @@ manifest's `access` block and the server-side exchange ship together.** The
 moment a manifest with `access` is registered, your agent's client needs its
 secret, and `connectInBrowser()` (which finishes in the browser, with no
 secret) stops working for it: it throws `WireSdkError` with
-`code: 'ACCESS_AGENT_NEEDS_SERVER'`.
+`code: 'ACCESS_AGENT_NEEDS_SERVER'`. (Wire answers the same way for a wrong
+agent id or a disabled agent, so the message names those too.)
 
 In order:
 

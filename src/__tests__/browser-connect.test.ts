@@ -203,7 +203,8 @@ describe('connectInBrowser / completeConnectInBrowser', () => {
     await expect(client.completeConnectInBrowser()).rejects.toMatchObject({
       code: 'ACCESS_AGENT_NEEDS_SERVER',
       status: 401,
-      message: expect.stringContaining('WireSignIn'),
+      // names the likely reason and the other ones
+      message: expect.stringMatching(/WireSignIn[\s\S]*check the agent id/),
     });
     expect(local.getItem(stashKey('state-1'))).toBeNull();
   });

@@ -44,8 +44,17 @@ describe('where it calls', () => {
     expect(endpoint({ endpoint: 'https://someday.agent-preview.usewire.io/' }).origin).toBe('https://someday.agent-preview.usewire.io');
   });
 
-  it('refuses a bad agent id, plain http, and an endpoint with a path', () => {
-    for (const bad of [{ agentId: 'Some Day' }, { endpoint: 'http://someday.agent.usewire.io' }, { endpoint: 'https://someday.agent.usewire.io/mcp' }, { endpoint: 'https://x.example/?a=1' }, { endpoint: 'nonsense' }]) {
+  it('refuses a bad agent id, plain http, an endpoint with a path, with credentials, or with a trailing-dot host', () => {
+    for (const bad of [
+      { agentId: 'Some Day' },
+      { endpoint: 'http://someday.agent.usewire.io' },
+      { endpoint: 'https://someday.agent.usewire.io/mcp' },
+      { endpoint: 'https://x.example/?a=1' },
+      { endpoint: 'nonsense' },
+      { endpoint: 'https://user:pw@mcp.someday.example' },
+      { endpoint: 'https://someday.agent.usewire.io@evil.example' },
+      { endpoint: 'https://mcp.someday.example.' },
+    ]) {
       expect(() => endpoint(bad), JSON.stringify(bad)).toThrow(WireEndpointError);
     }
     expect(() => endpoint({ endpoint: 'http://localhost:8787' })).not.toThrow();
@@ -61,7 +70,7 @@ describe('listTools', () => {
     answer = () => json({ tools });
     expect(await endpoint().listTools(TOKEN)).toEqual(tools);
     expect(calls).toHaveLength(1);
-    expect(calls[0]).toMatchObject({ url: 'https://someday.agent.usewire.io/tools', method: 'GET', body: undefined, redirect: 'error' });
+    expect(calls[0]).toMatchObject({ url: 'https://someday.agent.usewire.io/tools', method: 'GET', body: undefined, redirect: 'manual' });
     expect(calls[0]!.headers.get('authorization')).toBe(`Bearer ${TOKEN}`);
   });
 
@@ -137,6 +146,20 @@ describe('callTool', () => {
   it('a request that never reaches Wire is NETWORK_ERROR, retryable', async () => {
     const e = await err(new WireAgentEndpoint({ agentId: 'someday', fetch: (async () => { throw new TypeError('fetch failed'); }) as never }).listTools(TOKEN));
     expect(e).toMatchObject({ code: 'NETWORK_ERROR', retryable: true });
+  });
+
+  it('a redirect is never followed: the access token goes to this origin and nowhere else', async () => {
+    for (const status of [301, 302, 307, 308]) {
+      answer = () => new Response(null, { status, headers: { location: 'https://evil.example/tools' } });
+      calls = [];
+      const e = await err(endpoint().listTools(TOKEN));
+      expect(e, String(status)).toMatchObject({ code: 'UNEXPECTED_RESPONSE', retryable: false });
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.url).toBe('https://someday.agent.usewire.io/tools');
+    }
+    const opaque = { type: 'opaqueredirect', status: 0, ok: false, headers: new Headers(), json: async () => null } as unknown as Response;
+    const e = await err(new WireAgentEndpoint({ agentId: 'someday', fetch: (async () => opaque) as never }).callTool(TOKEN, 'find_places', {}));
+    expect(e.code).toBe('UNEXPECTED_RESPONSE');
   });
 
   it('the access token is never in an error', async () => {

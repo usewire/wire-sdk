@@ -8,8 +8,20 @@
     with PKCE that never names a `resource`), `exchangeCode()` and `refresh()`
     (authenticated with your client secret), `verifyIdToken()` and
     `userInfo()`. The ID token is verified against Wire's published keys
-    (EdDSA, issuer, audience, expiry) and its `sub` must be a per-agent user id
-    (`au_…`). It refuses to be constructed in a browser page.
+    (EdDSA, issuer, audience, expiry, one audience only) and its `sub` must be
+    a per-agent user id (`au_…`, Wire's own pattern). `exchangeCode` requires
+    the `nonce` (`nonce: false` to opt out). It refuses to be constructed where
+    both `window` and `document` exist.
+  - **A refresh never loses the new refresh token.** Wire's keys are fetched
+    before the token is sent, so a key failure costs nothing; an answer with no
+    ID token (Wire may leave it out of a refresh) gives the tokens with
+    `identity: null`; and if the ID token does not verify after Wire has
+    answered, the thrown `WireSignInError` carries the new tokens as `tokens`
+    and is not `retryable`. A key set that is unreachable or answers anything
+    but 200 is `UNAVAILABLE`, never `INVALID_ID_TOKEN`.
+  - **Runs on Cloudflare Workers.** Requests use `redirect: 'manual'` and
+    treat any redirect as an error; nothing is followed. A test runs the built
+    package inside workerd.
   - `WireAgentEndpoint`: `listTools(accessToken)` and
     `callTool(accessToken, name, args)` against your agent's own hostname
     (`GET /tools`, `POST /tools/{name}`).
@@ -41,10 +53,15 @@
   `app.privacy_policy_url`, `analysis`, `builtin_tools`, and a tool's `enabled`
   and `transports`. Wire already accepted the last four; the types did not let
   you write them.
-- **`connectInBrowser()` on an agent that declares `access`** now throws
-  `WireSdkError` with `code: 'ACCESS_AGENT_NEEDS_SERVER'` and says what to use
-  instead. Before, it surfaced Wire's `invalid_client` as a generic
-  `OAUTH_ERROR`. `connectInBrowser()` is unchanged for every other agent.
+- **`connectInBrowser()` when Wire answers `invalid_client`** now throws
+  `WireSdkError` with `code: 'ACCESS_AGENT_NEEDS_SERVER'`. The message says to
+  use `WireSignIn` on your server if your manifest declares `access`, and
+  otherwise to check the agent id and that the agent is active. Before, this
+  was a generic `OAUTH_ERROR`. `connectInBrowser()` is unchanged for every
+  other agent.
+- `WireAgentEndpoint` refuses an `endpoint` that carries credentials or whose
+  host ends with a dot.
+- New dev dependencies, for the workerd test only: `miniflare`, `esbuild`.
 - README: "Sign in with Wire", including moving an agent from in-browser
   connect, and mapping the claim for trials.
 

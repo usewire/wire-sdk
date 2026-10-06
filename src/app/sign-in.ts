@@ -31,7 +31,11 @@
  *   3. `exchangeCode({ code, codeVerifier })` answers the tokens, with the ID
  *      token already verified.
  *   4. Later, `refresh(refreshToken)` answers new ones. The refresh token
- *      changes each time: store the new one.
+ *      changes each time, and THE OLD ONE IS SPENT THE MOMENT WIRE ANSWERS:
+ *      store the new one before anything else, and never send a spent one
+ *      again. Wire treats a spent refresh token as stolen and signs the
+ *      person out of your agent (every token it holds for them stops
+ *      working). See `refresh`.
  *
  * The request never names a `resource`. Wire refuses one from this client.
  *
@@ -47,8 +51,8 @@ const USERINFO_PATH = '/api/auth/oauth2/userinfo';
 const DISCOVERY_PATH = '/.well-known/openid-configuration';
 const AGENT_ID_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
-/** A person's id as your agent knows them: `au_` and 24 characters. */
-export const AGENT_USER_ID_PATTERN = /^au_[A-Za-z0-9]{24}$/;
+/** A person's id as your agent knows them. Wire's own pattern for it, copied: keep the two the same. */
+export const AGENT_USER_ID_PATTERN = /^au_[0-9a-z]{16,48}$/;
 
 /** What a sign-in may ask for. `openid` is always sent. */
 export type WireSignInScope = 'openid' | 'email' | 'profile' | 'offline_access';
@@ -71,14 +75,26 @@ export type WireSignInErrorCode =
   /** The request did not reach Wire. */
   | 'NETWORK_ERROR';
 
-/** A sign-in call failed. `retryable`: the same call may succeed later. */
+/**
+ * A sign-in call failed. `retryable`: the SAME call may succeed later.
+ *
+ * `tokens`, on an error from `refresh()` only: Wire HAD ALREADY ANSWERED with
+ * new tokens when something after that failed (the ID token it sent did not
+ * verify). The refresh token you sent is spent. STORE `tokens.refreshToken`
+ * and `tokens.accessToken` in place of the old ones before you do anything
+ * else, then treat the error as you would otherwise. When `tokens` is set,
+ * `retryable` is false: the call must not be repeated with the old token.
+ */
 export class WireSignInError extends WireSdkError {
   readonly retryable: boolean;
-  constructor(code: WireSignInErrorCode, message: string, status?: number, details?: unknown, options?: { cause?: unknown }) {
+  readonly tokens?: WireSignInTokens;
+  constructor(code: WireSignInErrorCode, message: string, status?: number, details?: unknown, options?: { cause?: unknown; tokens?: WireSignInTokens }) {
     super(code, message, status, details);
     this.name = 'WireSignInError';
-    this.retryable = code === 'UNAVAILABLE' || code === 'NETWORK_ERROR';
+    this.retryable = !options?.tokens && (code === 'UNAVAILABLE' || code === 'NETWORK_ERROR');
     if (options?.cause !== undefined) (this as { cause?: unknown }).cause = options.cause;
+    // Not enumerable: tokens are not something to find in a log of the error.
+    if (options?.tokens) Object.defineProperty(this, 'tokens', { value: options.tokens, enumerable: false });
   }
 }
 
@@ -121,10 +137,15 @@ export interface WireSignInTokens {
   expiresAt: Date;
   /** Only when you asked for `offline_access`. It changes on every refresh. Keep it on your server. */
   refreshToken: string | null;
-  /** The ID token as Wire sent it. */
-  idToken: string;
-  /** Who signed in, from the verified ID token. */
-  identity: WireIdentity;
+  /** The ID token as Wire sent it. Always present after `exchangeCode`; null after a `refresh` that came back without one. */
+  idToken: string | null;
+  /**
+   * Who signed in, from the verified ID token. Always present after
+   * `exchangeCode`. NULL after a `refresh` whose answer carried no ID token
+   * (Wire may leave it out of a refresh): the person is who they were, so keep
+   * the identity you stored at sign-in.
+   */
+  identity: WireIdentity | null;
   /** The scopes Wire granted. */
   scope: string[];
 }
@@ -155,6 +176,16 @@ const randomUrlSafe = (bytes: number): string => base64Url(crypto.getRandomValue
 /** The PKCE challenge (S256) for a verifier. */
 export async function pkceChallenge(codeVerifier: string): Promise<string> {
   return base64Url(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(codeVerifier))));
+}
+
+/** Is this the library saying it could not GET the key set (as opposed to: the token is bad)? */
+function keysUnavailable(e: unknown): boolean {
+  if (e instanceof joseErrors.JWKSTimeout) return true;
+  if (e instanceof joseErrors.JWKSNoMatchingKey || e instanceof joseErrors.JWKSMultipleMatchingKeys) return false;
+  // Its plain error for a key-set answer that was not 200, or not a key set.
+  if (e instanceof joseErrors.JOSEError) return /JSON Web Key Set/i.test(e.message) && !(e instanceof joseErrors.JWTInvalid) && !(e instanceof joseErrors.JWSInvalid);
+  // Anything that is not the library's own is the fetch failing.
+  return !(e instanceof joseErrors.JOSEError);
 }
 
 function requireServer(): void {
@@ -260,32 +291,60 @@ export class WireSignIn {
   /**
    * Step 3. Exchange the `code` Wire sent to your redirect address. Check
    * `state` yourself first. The ID token in the answer is verified before this
-   * returns; with `nonce`, against the one you kept.
+   * returns, against the `nonce` you kept from `createAuthorizeRequest()`.
+   *
+   * `nonce` is REQUIRED: it ties the ID token to this sign-in. Pass
+   * `nonce: false` only if you built the authorize URL yourself without one.
    *
    * A code works once. If this throws `UNAVAILABLE` or `NETWORK_ERROR` the
    * code may or may not have been used: start the sign-in again.
    */
-  async exchangeCode(input: { code: string; codeVerifier: string; nonce?: string }): Promise<WireSignInTokens> {
+  async exchangeCode(input: { code: string; codeVerifier: string; nonce: string | false }): Promise<WireSignInTokens & { idToken: string; identity: WireIdentity }> {
     if (!input || typeof input.code !== 'string' || !input.code) throw new WireSignInError('INVALID_ARGUMENT', 'code is required');
     if (typeof input.codeVerifier !== 'string' || !input.codeVerifier) throw new WireSignInError('INVALID_ARGUMENT', 'codeVerifier is required');
-    return this.token(
+    if (input.nonce !== false && (typeof input.nonce !== 'string' || !input.nonce)) {
+      throw new WireSignInError('INVALID_ARGUMENT', 'nonce is required: the one createAuthorizeRequest() gave you. Pass `nonce: false` only if your authorize URL had none.');
+    }
+    // Wire's keys first: a code works once, so nothing that can be found out before spending it
+    // is left for after.
+    await this.loadKeys();
+    const tokens = await this.token(
       { grant_type: 'authorization_code', code: input.code, code_verifier: input.codeVerifier, redirect_uri: this.redirectUri, client_id: this.agentId },
-      input.nonce,
+      'exchange',
+      input.nonce === false ? undefined : input.nonce,
     );
+    return tokens as WireSignInTokens & { idToken: string; identity: WireIdentity };
   }
 
   /**
-   * Step 4. New tokens from a refresh token. The answer carries a NEW refresh
-   * token: store it in place of the old one, which stops working.
+   * Step 4. New tokens from a refresh token.
    *
-   * `UNAVAILABLE` and `NETWORK_ERROR` are retryable with the SAME refresh
-   * token: Wire checks everything before it replaces a token, so a failed
-   * answer has not used yours up. `INVALID_GRANT` means the person signs in
-   * again (they disconnected your agent, or the token is spent).
+   * THE REFRESH TOKEN YOU SEND IS SPENT AS SOON AS WIRE ANSWERS WITH NEW ONES.
+   * Store the new `refreshToken` in place of the old one before anything else.
+   * Sending a spent refresh token again is treated by Wire as theft: it ends
+   * every token your agent holds for that person, and they sign in again. So:
+   *
+   *   - Run ONE refresh at a time per person (a lock, or a single worker). Two
+   *     at once with the same token is a spent token sent twice.
+   *   - On an error WITH `tokens` (`WireSignInError.tokens`): Wire had already
+   *     answered. Store those tokens, then handle the error. Do not retry.
+   *   - On `UNAVAILABLE` where Wire ANSWERED (a 5xx, a 429), the token is not
+   *     spent: Wire decides everything before it replaces one. Retry with the
+   *     same token.
+   *   - On `NETWORK_ERROR` the request may or may not have arrived. Retry
+   *     once with the same token; if that answers `INVALID_GRANT`, the first
+   *     one did arrive, and the person signs in again.
+   *   - `INVALID_GRANT`: the person signs in again (they disconnected your
+   *     agent, or the token was spent).
+   *
+   * The answer's `identity` is null when Wire sent no ID token with it, which
+   * a refresh may do. Keep the identity you stored at sign-in.
    */
   async refresh(refreshToken: string): Promise<WireSignInTokens> {
     if (typeof refreshToken !== 'string' || !refreshToken) throw new WireSignInError('INVALID_ARGUMENT', 'refreshToken is required');
-    return this.token({ grant_type: 'refresh_token', refresh_token: refreshToken, client_id: this.agentId }, undefined);
+    // Wire's keys first, so a failure to fetch them costs nothing: the token is not sent.
+    await this.loadKeys();
+    return this.token({ grant_type: 'refresh_token', refresh_token: refreshToken, client_id: this.agentId }, 'refresh', undefined);
   }
 
   /**
@@ -298,11 +357,10 @@ export class WireSignIn {
     if (typeof idToken !== 'string' || idToken.split('.').length !== 3) {
       throw new WireSignInError('INVALID_ID_TOKEN', 'not an ID token');
     }
-    const { issuer, jwksUri } = await this.discover();
-    this.keys ??= createRemoteJWKSet(new URL(jwksUri), { [customFetch]: this.fetchImpl as never });
+    const { issuer, keys } = await this.loadKeys();
     let payload: JWTPayload;
     try {
-      ({ payload } = await jwtVerify(idToken, this.keys, {
+      ({ payload } = await jwtVerify(idToken, keys, {
         issuer,
         audience: this.agentId,
         algorithms: ['EdDSA'],
@@ -310,7 +368,7 @@ export class WireSignIn {
         requiredClaims: ['sub', 'iat', 'exp'],
       }));
     } catch (e) {
-      if (e instanceof joseErrors.JWKSTimeout || (e instanceof Error && /fetch|network|ECONN|timed? ?out/i.test(e.message) && !(e instanceof joseErrors.JOSEError))) {
+      if (keysUnavailable(e)) {
         throw new WireSignInError('UNAVAILABLE', "Wire's signing keys could not be fetched", undefined, undefined, { cause: e });
       }
       // No `cause`: the library's error for a failed claim carries the token's decoded claims
@@ -355,11 +413,37 @@ export class WireSignIn {
   }
 
   private async send(url: string, init: RequestInit): Promise<Response> {
+    let res: Response;
     try {
-      return await this.fetchImpl(url, { ...init, redirect: 'error' });
+      // `manual`, not `error`: Cloudflare Workers refuses `error` outright. A redirect is never
+      // followed, so the client secret and a person's tokens go to Wire's origin and nowhere else.
+      res = await this.fetchImpl(url, { ...init, redirect: 'manual' });
     } catch (e) {
       throw new WireSignInError('NETWORK_ERROR', 'the request did not reach Wire', undefined, undefined, { cause: e });
     }
+    if (res.type === 'opaqueredirect' || (res.status >= 300 && res.status < 400)) {
+      throw new WireSignInError('UNEXPECTED_RESPONSE', 'Wire answered with a redirect, which this client does not follow', res.status || undefined);
+    }
+    return res;
+  }
+
+  /**
+   * Wire's issuer and its signing keys, fetched and held. Called BEFORE a code or a refresh token
+   * is spent, so that "Wire's keys could not be fetched" is found out while it still costs nothing.
+   * A failure is `UNAVAILABLE` (retryable) and is not remembered.
+   */
+  private async loadKeys(): Promise<{ issuer: string; keys: JWTVerifyGetKey }> {
+    const { issuer, jwksUri } = await this.discover();
+    if (!this.keys) {
+      const set = createRemoteJWKSet(new URL(jwksUri), { [customFetch]: this.fetchImpl as never });
+      try {
+        await set.reload();
+      } catch (e) {
+        throw new WireSignInError('UNAVAILABLE', "Wire's signing keys could not be fetched", undefined, undefined, { cause: e });
+      }
+      this.keys = set;
+    }
+    return { issuer, keys: this.keys };
   }
 
   private discover(): Promise<Discovery> {
@@ -391,7 +475,7 @@ export class WireSignIn {
     return this.discovery;
   }
 
-  private async token(form: Record<string, string>, nonce: string | undefined): Promise<WireSignInTokens> {
+  private async token(form: Record<string, string>, kind: 'exchange' | 'refresh', nonce: string | undefined): Promise<WireSignInTokens> {
     // client_secret_basic: the id and secret, form-encoded, then base64 (RFC 6749 §2.3.1).
     const basic = btoa(`${encodeURIComponent(this.agentId)}:${encodeURIComponent(this.#secret)}`);
     const res = await this.send(this.base + TOKEN_PATH, {
@@ -411,19 +495,39 @@ export class WireSignIn {
       if (error === 'invalid_grant') throw new WireSignInError('INVALID_GRANT', message, res.status, { error });
       throw new WireSignInError('OAUTH_ERROR', message, res.status, { error });
     }
-    if (!json || typeof json.access_token !== 'string' || !json.access_token || typeof json.id_token !== 'string') {
-      throw new WireSignInError('UNEXPECTED_RESPONSE', "Wire's token answer had no access token or no ID token. Did the request ask for `openid`?", res.status);
+    if (!json || typeof json.access_token !== 'string' || !json.access_token) {
+      throw new WireSignInError('UNEXPECTED_RESPONSE', "Wire's token answer had no access token", res.status);
     }
-    const identity = await this.verifyIdToken(json.id_token, nonce !== undefined ? { nonce } : {});
     const expiresIn = typeof json.expires_in === 'number' && json.expires_in > 0 ? json.expires_in : 0;
-    const refreshToken = typeof json.refresh_token === 'string' && json.refresh_token ? json.refresh_token : null;
-    return {
+    const issued: WireSignInTokens = {
       accessToken: json.access_token,
       expiresAt: new Date(Date.now() + expiresIn * 1000),
-      refreshToken,
-      idToken: json.id_token,
-      identity,
+      refreshToken: typeof json.refresh_token === 'string' && json.refresh_token ? json.refresh_token : null,
+      idToken: typeof json.id_token === 'string' && json.id_token ? json.id_token : null,
+      identity: null,
       scope: typeof json.scope === 'string' ? json.scope.split(' ').filter(Boolean) : [],
     };
+
+    if (kind === 'exchange') {
+      // A sign-in with no verified ID token signs nobody in. The code is spent either way; the
+      // tokens are not handed over, because there is nobody to hand them to.
+      if (!issued.idToken) {
+        throw new WireSignInError('UNEXPECTED_RESPONSE', "Wire's token answer had no ID token. Did the request ask for `openid`?", res.status);
+      }
+      return { ...issued, identity: await this.verifyIdToken(issued.idToken, nonce !== undefined ? { nonce } : {}) };
+    }
+
+    // A REFRESH: Wire has replaced the refresh token. From here on NOTHING may lose the new one.
+    // No ID token is an answer (Wire may leave it out of a refresh): the tokens, and no identity.
+    if (!issued.idToken) return issued;
+    try {
+      return { ...issued, identity: await this.verifyIdToken(issued.idToken) };
+    } catch (e) {
+      const cause = e instanceof WireSignInError ? e : new WireSignInError('INVALID_ID_TOKEN', 'the ID token did not verify');
+      // The new tokens ride on the error, so the caller can store them before handling it.
+      throw new WireSignInError(cause.code as WireSignInErrorCode, `${cause.message} (Wire had already issued new tokens: they are on this error as \`tokens\`; store them)`, cause.status, cause.details, {
+        tokens: { ...issued, idToken: null },
+      });
+    }
   }
 }

@@ -114,6 +114,12 @@ export class WireAgentEndpoint {
     if (origin.pathname !== '/' || origin.search || origin.hash) {
       throw new WireEndpointError('INVALID_ARGUMENT', 'endpoint is an origin (https://host), with no path: this client adds /tools');
     }
+    if (origin.username || origin.password) {
+      throw new WireEndpointError('INVALID_ARGUMENT', 'endpoint must not carry credentials (https://user:pass@host)');
+    }
+    if (origin.hostname.endsWith('.')) {
+      throw new WireEndpointError('INVALID_ARGUMENT', 'endpoint host must not end with a dot');
+    }
     this.origin = origin.origin;
     this.fetchImpl = options.fetch ?? ((...a: Parameters<typeof fetch>) => fetch(...a));
   }
@@ -156,16 +162,23 @@ export class WireAgentEndpoint {
     if (typeof accessToken !== 'string' || !accessToken || /\s/.test(accessToken)) {
       throw new WireEndpointError('INVALID_ARGUMENT', 'accessToken is required: the one WireSignIn handed you for this person');
     }
+    let res: Response;
     try {
-      return await this.fetchImpl(this.origin + path, {
+      res = await this.fetchImpl(this.origin + path, {
         method,
         headers: { authorization: `Bearer ${accessToken}`, accept: 'application/json', ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
         ...(body !== undefined ? { body } : {}),
-        redirect: 'error',
+        // `manual`, not `error`: Cloudflare Workers refuses `error` outright. A redirect is never
+        // followed, so the person's access token goes to this origin and nowhere else.
+        redirect: 'manual',
       });
     } catch (e) {
       throw new WireEndpointError('NETWORK_ERROR', 'the request did not reach Wire', undefined, undefined, { cause: e });
     }
+    if (res.type === 'opaqueredirect' || (res.status >= 300 && res.status < 400)) {
+      throw new WireEndpointError('UNEXPECTED_RESPONSE', 'the endpoint answered with a redirect, which this client does not follow', res.status || undefined);
+    }
+    return res;
   }
 
   /** The JSON of a good answer, or the error a bad one is. */
