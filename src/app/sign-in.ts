@@ -32,10 +32,11 @@
  *      token already verified.
  *   4. Later, `refresh(refreshToken)` answers new ones. The refresh token
  *      changes each time, and THE OLD ONE IS SPENT THE MOMENT WIRE ANSWERS:
- *      store the new one before anything else, and never send a spent one
- *      again. Wire treats a spent refresh token as stolen and signs the
- *      person out of your agent (every token it holds for them stops
- *      working). See `refresh`.
+ *      store the new one before anything else. For ten seconds a spent one
+ *      sent again gets the same new tokens (so a retry after a lost answer is
+ *      safe); after that Wire treats it as stolen and signs the person out of
+ *      your agent (every token it holds for them stops working). See
+ *      `refresh`.
  *
  * The request never names a `resource`. Wire refuses one from this client.
  *
@@ -321,8 +322,10 @@ export class WireSignIn {
    *
    * THE REFRESH TOKEN YOU SEND IS SPENT AS SOON AS WIRE ANSWERS WITH NEW ONES.
    * Store the new `refreshToken` in place of the old one before anything else.
-   * Sending a spent refresh token again is treated by Wire as theft: it ends
-   * every token your agent holds for that person, and they sign in again. So:
+   * For ten seconds after it is spent, sending it again with the same request
+   * gets the same new tokens back, so an immediate retry is safe. After that,
+   * sending a spent refresh token is treated by Wire as theft: it ends every
+   * token your agent holds for that person, and they sign in again. So:
    *
    *   - Run ONE refresh at a time per person (a lock, or a single worker). Two
    *     at once with the same token is a spent token sent twice.
@@ -331,9 +334,10 @@ export class WireSignIn {
    *   - On `UNAVAILABLE` where Wire ANSWERED (a 5xx, a 429), the token is not
    *     spent: Wire decides everything before it replaces one. Retry with the
    *     same token.
-   *   - On `NETWORK_ERROR` the request may or may not have arrived. Retry
-   *     once with the same token; if that answers `INVALID_GRANT`, the first
-   *     one did arrive, and the person signs in again.
+   *   - On `NETWORK_ERROR` the request may or may not have arrived. Retry at
+   *     once with the same token: inside the ten seconds that is safe either
+   *     way. If a later retry answers `INVALID_GRANT`, the first one did
+   *     arrive and the window has passed, and the person signs in again.
    *   - `INVALID_GRANT`: the person signs in again (they disconnected your
    *     agent, or the token was spent).
    *

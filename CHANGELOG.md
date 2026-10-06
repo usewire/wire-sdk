@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Docs: Wire now gives a spent refresh token a ten-second grace window. Sent
+  again within it, with the same request, it gets the same new tokens back, so
+  an immediate retry after a lost answer is safe. After it, a spent refresh
+  token still signs the person out of your agent. The README's refresh section
+  and `refresh()`'s documentation say so. No code change.
+
 ## 0.17.0
 
 - **Sign in with Wire.** Two new server-side clients on `@usewire/sdk/agent`,
