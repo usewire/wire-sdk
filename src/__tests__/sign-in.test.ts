@@ -237,9 +237,69 @@ describe('refresh', () => {
     expect(blip.retryable).toBe(true);
     expect(blip.tokens).toBeUndefined();
     tokenAnswer = () => json({ error: 'invalid_grant' }, 400);
-    const e = await err(client().refresh('r'));
+    const e = await err(client({ refreshRetryDelayMs: 0 }).refresh('r'));
     expect(e.code).toBe('INVALID_GRANT');
     expect(e.retryable).toBe(false);
+  });
+
+  // Two refreshes with one token at the same instant: Wire gives one the new tokens and can
+  // answer the other `invalid_grant` for the moment before the first answer is kept. Nothing
+  // is ended, and the same token a moment later gets the same new tokens.
+  it('INVALID_GRANT IS TRIED ONCE MORE after a pause, with the same token: a collision with another refresh ends as a success', async () => {
+    let n = 0;
+    const at: number[] = [];
+    tokenAnswer = async () => {
+      at.push(Date.now());
+      return ++n === 1
+        ? json({ error: 'invalid_grant' }, 400)
+        : json({ access_token: 'access-2', expires_in: 3600, refresh_token: 'refresh-2', id_token: await idToken(), scope: 'openid offline_access' });
+    };
+    const t = await client({ refreshRetryDelayMs: 40 }).refresh('refresh-1');
+    expect(t).toMatchObject({ accessToken: 'access-2', refreshToken: 'refresh-2' });
+    const sent = tokenCalls();
+    expect(sent).toHaveLength(2);
+    // the same request both times
+    expect(sent[1]!.body).toBe(sent[0]!.body);
+    expect(new URLSearchParams(sent[1]!.body).get('refresh_token')).toBe('refresh-1');
+    expect(at[1]! - at[0]!).toBeGreaterThanOrEqual(35);
+  });
+
+  it('ONCE, not in a loop: a token that is really no longer good is refused twice and that is final', async () => {
+    tokenAnswer = () => json({ error: 'invalid_grant' }, 400);
+    const e = await err(client({ refreshRetryDelayMs: 0 }).refresh('gone'));
+    expect(e.code).toBe('INVALID_GRANT');
+    expect(e.retryable).toBe(false);
+    expect(tokenCalls()).toHaveLength(2);
+  });
+
+  it('nothing else is tried again: a blip, a bad secret and an answer that carried tokens are sent once', async () => {
+    for (const answer of [() => json({ error: 'temporarily_unavailable' }, 503), () => json({ error: 'invalid_client' }, 401), () => json({ error: 'server_error' }, 500)]) {
+      calls = [];
+      tokenAnswer = answer;
+      await err(client({ refreshRetryDelayMs: 0 }).refresh('r'));
+      expect(tokenCalls()).toHaveLength(1);
+    }
+    // Wire answered with tokens, and the ID token does not verify: the error carries the tokens,
+    // and the spent token is not sent again
+    calls = [];
+    tokenAnswer = async () => json({ access_token: 'access-2', expires_in: 3600, refresh_token: 'refresh-2', id_token: await idToken({ aud: 'another-agent' }), scope: 'openid' });
+    const carried = await err(client({ refreshRetryDelayMs: 0 }).refresh('r'));
+    expect(carried.tokens).toMatchObject({ refreshToken: 'refresh-2' });
+    expect(tokenCalls()).toHaveLength(1);
+  });
+
+  it('the second answer is the one reported, whatever it is', async () => {
+    let n = 0;
+    tokenAnswer = () => (++n === 1 ? json({ error: 'invalid_grant' }, 400) : json({ error: 'temporarily_unavailable' }, 503));
+    const e = await err(client({ refreshRetryDelayMs: 0 }).refresh('r'));
+    expect(e.code).toBe('UNAVAILABLE');
+    expect(tokenCalls()).toHaveLength(2);
+  });
+
+  it('a code exchange is never tried again: a code works once', async () => {
+    tokenAnswer = () => json({ error: 'invalid_grant' }, 400);
+    await err(client({ refreshRetryDelayMs: 0 }).exchangeCode({ code: 'c', codeVerifier: 'v'.repeat(43), nonce: 'n' }));
+    expect(tokenCalls()).toHaveLength(1);
   });
 
   // Wire replaces the refresh token before this client sees the answer. From that moment the

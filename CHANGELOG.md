@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.17.1
+
+- Docs: Wire now gives a spent refresh token a ten-second grace window. Sent
+  again within it, with the same request, it gets the same new tokens back, so
+  an immediate retry after a lost answer is safe. After it, a spent refresh
+  token still signs the person out of your agent. The README's refresh section
+  and `refresh()`'s documentation say so.
+- `WireSignIn.refresh()` tries once more, after 300 ms, when Wire answers
+  `INVALID_GRANT`, before it reports it. Two refreshes with the same token at
+  the same instant can leave one of them refused for a moment with nothing
+  ended; the second try gets the same new tokens the other request got. A
+  token that is really no longer good is refused twice instead of once, and
+  the error is the same. `refreshRetryDelayMs` sets the pause. A code exchange
+  is never tried again.
+
 ## 0.17.0
 
 - **Sign in with Wire.** Two new server-side clients on `@usewire/sdk/agent`,

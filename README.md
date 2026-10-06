@@ -345,9 +345,18 @@ const { data } = await endpoint.callTool<{ places: Place[] }>(accessToken, 'find
 ### 5. Refresh
 
 A refresh token works **once**. The moment Wire answers a refresh with new
-tokens, the one you sent is spent, and **sending a spent refresh token again
-signs the person out of your agent**: Wire treats it as a stolen token and
-ends every token your agent holds for them. So a refresh has three rules.
+tokens, the one you sent is spent.
+
+Wire allows for an answer that got lost on the way: **for ten seconds after a
+refresh token is spent, sending it again with the same request gets the same
+new tokens back.** So an immediate retry after a dropped connection is safe.
+It is the same pair both times, not a second one.
+
+After those ten seconds, **sending a spent refresh token signs the person out
+of your agent**: Wire treats it as a stolen token and ends every token your
+agent holds for them. Ten seconds covers a retry. It does not cover two workers
+refreshing the same person minutes apart, or a token restored from an old
+backup. So a refresh still has three rules.
 
 1. **One at a time per person.** Take a lock (or use a single worker) around
    the read, the refresh and the write. Two refreshes at once with the same
@@ -386,8 +395,19 @@ await withLock(`wire-refresh:${user.id}`, async () => {
 | An error with `tokens` | Yes | Store `err.tokens`. Do not retry. |
 | `UNAVAILABLE` (Wire answered 5xx or 429, or its keys could not be fetched) | Almost always no | Retry later with the same token. Wire decides everything before it replaces a token, and this client fetches Wire's keys before it sends yours. The exception is a 502 or 504 produced on the way back after Wire had already answered: the retry then answers `INVALID_GRANT`, and the person signs in again. |
 | `UNEXPECTED_RESPONSE` or `OAUTH_ERROR` without `tokens` | Unknown | Do not retry in a loop. Try once more; if that answers `INVALID_GRANT`, the person signs in again. |
-| `NETWORK_ERROR` | Unknown | Retry once with the same token. If that answers `INVALID_GRANT`, the first request did arrive: the person signs in again. |
-| `INVALID_GRANT` | It was already | The person signs in again. |
+| `NETWORK_ERROR` | Unknown | Retry at once with the same token. Within ten seconds of the first attempt Wire answers a spent token with the same new tokens, so a retry is safe whether or not the first request arrived. If a later retry answers `INVALID_GRANT`, the first one did arrive and the window has passed: the person signs in again. |
+| `INVALID_GRANT` | It was already | The person signs in again. `refresh()` has already tried once more before telling you (see below), so this is final. |
+
+**Two refreshes at the same instant.** If two requests with the same refresh
+token reach Wire together, one gets the new tokens. The other can be answered
+`invalid_grant` for the moment before the first answer is kept; nothing is
+ended, and the same token a moment later gets the same new tokens. So
+`refresh()` does not report `INVALID_GRANT` on the first refusal: it waits
+300 ms (`refreshRetryDelayMs`) and sends the same token once more. A collision
+ends as a success with the same tokens the other request got. A token that is
+really no longer good is refused a second time, and that is what you are told.
+This does not replace the lock in rule 1: outside the ten seconds, a second
+refresh with a spent token still signs the person out.
 
 ### Moving from in-browser connect to Sign in with Wire
 
