@@ -115,6 +115,11 @@ export interface WireSignInOptions {
   fetch?: typeof fetch;
   /** Seconds of clock difference to allow when checking an ID token. Default 60. */
   clockToleranceSec?: number;
+  /**
+   * Milliseconds `refresh()` waits before the one retry it makes when Wire
+   * answers `INVALID_GRANT`. Default 300.
+   */
+  refreshRetryDelayMs?: number;
 }
 
 /** The verified claims of an ID token. */
@@ -214,6 +219,7 @@ export class WireSignIn {
   readonly #secret: string;
   private readonly fetchImpl: typeof fetch;
   private readonly tolerance: number;
+  private readonly refreshRetryDelayMs: number;
   private discovery: Promise<Discovery> | null = null;
   private keys: JWTVerifyGetKey | null = null;
 
@@ -246,6 +252,8 @@ export class WireSignIn {
     this.base = base.origin;
     this.fetchImpl = options.fetch ?? ((...a: Parameters<typeof fetch>) => fetch(...a));
     this.tolerance = options.clockToleranceSec ?? 60;
+    const delay = options.refreshRetryDelayMs;
+    this.refreshRetryDelayMs = typeof delay === 'number' && Number.isFinite(delay) && delay >= 0 ? Math.min(delay, 5000) : 300;
   }
 
   /**
@@ -341,6 +349,17 @@ export class WireSignIn {
    *   - `INVALID_GRANT`: the person signs in again (they disconnected your
    *     agent, or the token was spent).
    *
+   * ONE RETRY ON `INVALID_GRANT` IS BUILT IN. When two refreshes with the same
+   * token reach Wire at the same instant, one gets the new tokens and the
+   * other can be answered `invalid_grant` for the moment before the first
+   * answer is kept, with nothing ended. So this method waits a moment
+   * (`refreshRetryDelayMs`, 300 ms) and sends the same token once more: inside
+   * the ten seconds that returns the same new tokens. If the second answer is
+   * `INVALID_GRANT` too, that is what is thrown, and it is final. A token that
+   * really is no longer good is refused twice instead of once; nothing else
+   * changes for it. This does not replace the lock: it covers the collision a
+   * lock across several servers can still let through.
+   *
    * The answer's `identity` is null when Wire sent no ID token with it, which
    * a refresh may do. Keep the identity you stored at sign-in.
    */
@@ -348,7 +367,15 @@ export class WireSignIn {
     if (typeof refreshToken !== 'string' || !refreshToken) throw new WireSignInError('INVALID_ARGUMENT', 'refreshToken is required');
     // Wire's keys first, so a failure to fetch them costs nothing: the token is not sent.
     await this.loadKeys();
-    return this.token({ grant_type: 'refresh_token', refresh_token: refreshToken, client_id: this.agentId }, 'refresh', undefined);
+    const send = () => this.token({ grant_type: 'refresh_token', refresh_token: refreshToken, client_id: this.agentId }, 'refresh', undefined);
+    try {
+      return await send();
+    } catch (e) {
+      // Only a plain refusal: an error that carries tokens means Wire had already answered.
+      if (!(e instanceof WireSignInError) || e.code !== 'INVALID_GRANT' || e.tokens) throw e;
+      await new Promise((resolve) => setTimeout(resolve, this.refreshRetryDelayMs));
+      return send();
+    }
   }
 
   /**
