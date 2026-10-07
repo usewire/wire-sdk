@@ -209,6 +209,24 @@ export interface ManifestRegistration {
   baseTools: string[];
   /** Each action and the host Wire will call. */
   actions: { name: string; host: string }[];
+  /**
+   * Things Wire stored the manifest with but wants you to know. Empty when
+   * there are none. Each has a stable `code`:
+   *   - `ACTION_ADDRESS_DROPPED`: this version changed or removed an action's
+   *     address without listing the old one in `previous_urls`, so installs on
+   *     the previous version fail those actions until they update;
+   *   - `SDK_VALIDATOR_BEHIND`: this SDK checked the manifest with older rules
+   *     than Wire applies;
+   *   - `access_undeclared`: a tool sends records to your server and the
+   *     manifest declares no access level.
+   */
+  warnings: ManifestRegistrationWarning[];
+}
+
+/** One entry of `ManifestRegistration.warnings`. */
+export interface ManifestRegistrationWarning {
+  code: string;
+  message: string;
 }
 
 export class WireSdkError extends Error {
