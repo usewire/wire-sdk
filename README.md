@@ -788,7 +788,7 @@ const client = new WireClient({
   deviceKey: { privateJwk, publicKey: publicKeyB64, credentialId: 'pk_…' },
 });
 const registered = await client.registerManifest(manifest);
-// { agentId, appId, version, hash, status: 'created' | 'updated' | 'unchanged', tools, baseTools, actions }
+// { agentId, appId, version, hash, status: 'created' | 'updated' | 'unchanged', tools, baseTools, actions, warnings }
 ```
 
 `manifest.app.id` must be your agent id with `-` changed to `_` (agent
@@ -805,6 +805,84 @@ Registering an identical document again answers `unchanged`. Bump
 | 409 | | this `app.version` is already registered with different content |
 | 503 | | manifest registration is not available on this environment yet |
 | 401 | | the key is not a live publisher key of this agent |
+
+A registration that succeeds can still carry `registered.warnings`, a list of
+`{ code, message }`. It is empty when Wire has nothing to say. Print it in your
+deploy script: the one that matters most is `ACTION_ADDRESS_DROPPED`, described
+next.
+
+### Moving an action to a new address
+
+An install calls the `url` of the manifest version it has installed, and it
+keeps that version until the person updates. Wire signs a call only to an
+address your **current** manifest declares for that action. So if you register
+a version that changes an action's `url` and nothing else, every install still
+on the earlier version calls an address Wire will no longer sign for, and that
+tool fails for those people until they update.
+
+Treat an address like a key you are rotating: declare both, ship, watch, then
+retire the old one.
+
+**1. Declare both.** In the version that changes `url`, list the old address in
+`previous_urls`:
+
+```typescript
+actions: [
+  {
+    name: 'geocode',
+    description: 'Turns an address into coordinates. Receives the address; stores nothing.',
+    url: 'https://new.example.com/geocode',
+    previous_urls: ['https://old.example.com/geocode'],
+    input: { /* … */ },
+    output: { /* … */ },
+  },
+],
+```
+
+**2. Ship, and keep serving both.** Register the version. Installs on the
+earlier version go on calling the old address and Wire goes on signing for it.
+Installs that update call the new one. Your old endpoint has to keep answering
+until you retire it. A call is signed for the address it was sent to, so the
+old endpoint verifies with its own URL, as it always has (`defineAction`
+reads it from the request).
+
+**3. Watch.** Your old endpoint's own traffic is the signal: when it has
+stopped receiving calls, nobody is left on the earlier version. For a person
+you know, `listInstalls(agentUserId)` reports the version each of their
+installs runs (`installedVersion`).
+
+**4. Retire.** Register a version without the old address in `previous_urls`.
+From then on Wire refuses to sign a call to it. Do this before you give up the
+old host, so an address you no longer control is never one Wire signs for.
+
+The rules:
+
+- At most three previous addresses per action. Each is an https URL under the
+  same rules as `url`, and none may equal `url`.
+- **Declare the old address in the same version that changes `url`.** Wire
+  accepts a previous address only if the action had it, as its `url` or as a
+  previous address, in the version being replaced. A first version cannot
+  declare one. An address you retired cannot be declared again; make it the
+  `url` again if you need it back.
+- Addresses are kept per action name. A **renamed or removed** action is not
+  covered: installs on the earlier version fail it. If you want them to keep
+  working, keep the action declared until you are ready to retire it.
+- Wire never calls a previous address for an install on the version that
+  declares it. It is not shown on the connect screen and is not something a
+  person is asked to approve. Moving to a host people have not approved is
+  still an update they are asked about, as before.
+
+If you forget, the registration still succeeds, with a warning:
+
+```typescript
+const registered = await client.registerManifest(manifest);
+for (const w of registered.warnings) console.warn(`${w.code}: ${w.message}`);
+// ACTION_ADDRESS_DROPPED: Action "geocode" moved to a new address without declaring the old one in previous_urls. …
+```
+
+To go back, register a version that declares the action at its old address
+again, with the new one in `previous_urls` so installs that already updated
+keep working. Then move again, this time with both declared.
 
 ### Serve an action (Cloudflare Worker)
 

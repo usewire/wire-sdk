@@ -41,7 +41,7 @@ const errorsOf = (m: unknown) => {
 
 describe('the pin', () => {
   it('is the engine commit Wire runs in production', () => {
-    expect(MANIFEST_VALIDATOR_REF).toBe('c590e34c3d4d9bd0d3c3c9cd8bf4a3ebeab098cb');
+    expect(MANIFEST_VALIDATOR_REF).toBe('944df0d4253087f49045a285747ba3bbe3100965');
   });
 });
 
@@ -207,5 +207,52 @@ describe('the rest of the contract the types now cover', () => {
 
   it('an unknown base tool is still refused', () => {
     expect(errorsOf({ ...base(), tools: [{ ...base().tools[0]!, tool: { name: 'wire_does_not_exist', args: {} } }] }).length).toBeGreaterThan(0);
+  });
+});
+
+// 0.18.0: an action that moved keeps its earlier addresses declared, so installs
+// still on an earlier version go on working until the developer retires them.
+describe('an action\'s previous_urls', () => {
+  const action = (over: Record<string, unknown> = {}) => ({
+    name: 'geocode',
+    description: 'Turns an address into coordinates.',
+    url: 'https://new.someday.example/geocode',
+    input: { type: 'object', properties: { address: { type: 'string' } }, required: ['address'] },
+    output: { type: 'object', properties: { lat: { type: 'number' } } },
+    ...over,
+  });
+  const withAction = (over: Record<string, unknown> = {}) => ({ ...base(), actions: [action(over)] });
+
+  it('is typed, accepted and kept on the normalized manifest', () => {
+    const m = defineManifest({ ...base(), actions: [{ ...action(), method: 'POST' as const, previous_urls: ['https://old.someday.example/geocode'] }] });
+    expect(m.actions?.[0]?.previous_urls).toEqual(['https://old.someday.example/geocode']);
+    expect(m.actions?.[0]?.url).toBe('https://new.someday.example/geocode');
+  });
+
+  it('a manifest without it is what it was; an empty list is the same as none', () => {
+    const plain = validateWireManifest(withAction());
+    const empty = validateWireManifest(withAction({ previous_urls: [] }));
+    expect(plain.ok && empty.ok).toBe(true);
+    if (plain.ok && empty.ok) expect(empty.manifest).toEqual(plain.manifest);
+    if (plain.ok) expect(JSON.stringify(plain.manifest)).not.toContain('previous_urls');
+  });
+
+  it('refuses what Wire refuses, at the entry\'s own path', () => {
+    const cases: [unknown, string, RegExp][] = [
+      [['http://old.someday.example/geocode'], 'actions.0.previous_urls.0', /https/],
+      [['https://localhost/geocode'], 'actions.0.previous_urls.0', /localhost/],
+      [['https://10.0.0.8/geocode'], 'actions.0.previous_urls.0', /private/],
+      [['https://new.someday.example/geocode'], 'actions.0.previous_urls.0', /this action's url/],
+      [['https://a.example/g', 'https://a.example/g'], 'actions.0.previous_urls.1', /twice/],
+      [['https://a.example/g', 'https://b.example/g', 'https://c.example/g', 'https://d.example/g'], 'actions.0.previous_urls', /at most 3/],
+      ['https://old.someday.example/geocode', 'actions.0.previous_urls', /array/],
+    ];
+    for (const [previous, path, why] of cases) {
+      const errors = errorsOf(withAction({ previous_urls: previous }));
+      const hit = errors.find((e) => e.path === path);
+      expect(hit, `${JSON.stringify(previous)} -> ${JSON.stringify(errors)}`).toBeTruthy();
+      expect(hit!.message).toMatch(why);
+    }
+    expect(() => defineManifest(withAction({ previous_urls: ['http://old.someday.example/geocode'] }) as never)).toThrow(WireManifestError);
   });
 });

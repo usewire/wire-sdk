@@ -136,6 +136,24 @@ export interface ManifestAction {
   method?: 'POST';
   /** Your HTTPS endpoint. Wire calls exactly this URL and signs it into every call (`wire_url`). */
   url: string;
+  /**
+   * For an action that MOVED: the addresses it had as its `url` in earlier
+   * versions and that you still serve. At most 3, each an https URL under the
+   * same rules as `url`, none equal to `url`.
+   *
+   * An install calls the `url` of the version it has installed, and Wire signs
+   * a call only to an address your current manifest declares for that action.
+   * So a version that changes `url` breaks the action for every install still
+   * on the earlier version, until that person updates, unless the old address
+   * is listed here. Wire never calls a previous address for an install on this
+   * version, and it is not shown on the connect screen.
+   *
+   * Declare the old address in the SAME version that changes `url`: Wire
+   * accepts a previous address only if the action had it (as `url` or as a
+   * previous address) in the version being replaced. Retire it by registering
+   * a version without it.
+   */
+  previous_urls?: string[];
   /** JSON Schema for what Wire sends. */
   input: JsonSchema;
   /** JSON Schema for what you answer. Wire validates it too. */

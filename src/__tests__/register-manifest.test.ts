@@ -63,6 +63,8 @@ describe('WireClient.registerManifest', () => {
       tools: [],
       baseTools: [],
       actions: [{ name: 'geocode', host: 'geo-app.example' }],
+      // Always a list; empty when Wire sends none (and from a server that never does).
+      warnings: [],
     });
 
     const [url, init] = fetchMock.mock.calls[0]!;
@@ -134,6 +136,40 @@ describe('WireClient.registerManifest', () => {
       code: 'INVALID_MANIFEST',
       status: 422,
       details: { errors: [{ path: 'actions.0.description', message: 'is required' }] },
+    });
+  });
+
+  // 0.18.0: a registration that succeeds can carry warnings, and the SDK no longer drops them.
+  describe('warnings', () => {
+    const answer = (data: Record<string, unknown>) =>
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          status: 200,
+          json: async () => ({ success: true, data: { agent_id: 'geo-app', app_id: 'geo_app', version: '0.2.0', hash: 'h', status: 'updated', ...data } }),
+        })
+      );
+    const register = async () => {
+      const key = await generateDeviceKey();
+      return new WireClient({ agentId: 'geo_app', deviceKey: { ...key, credentialId: 'pk_1' } }).registerManifest(manifest);
+    };
+
+    it('an action moved without declaring its old address: the warning Wire sends is returned as it is', async () => {
+      const dropped = { code: 'ACTION_ADDRESS_DROPPED', message: 'Action "geocode" moved to a new address without declaring the old one in previous_urls.' };
+      answer({ warnings: [dropped] });
+      const r = await register();
+      expect(r.status).toBe('updated');
+      expect(r.warnings).toEqual([dropped]);
+    });
+
+    it('none, an older server that sends no such key, and entries that are not warnings all give an empty or cleaned list', async () => {
+      answer({});
+      expect((await register()).warnings).toEqual([]);
+      answer({ warnings: 'nope' });
+      expect((await register()).warnings).toEqual([]);
+      answer({ warnings: [null, { code: 7, message: 'x' }, { code: 'A' }, { code: 'B', message: 'kept', extra: 1 }] });
+      expect((await register()).warnings).toEqual([{ code: 'B', message: 'kept' }]);
     });
   });
 });

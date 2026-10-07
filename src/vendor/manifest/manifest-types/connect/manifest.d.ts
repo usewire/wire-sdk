@@ -20,6 +20,8 @@ export declare const ACTION_NAME_RE: RegExp;
 export declare const ACTION_NAME_MAX = 64;
 export declare const ACTION_DESCRIPTION_MAX = 2000;
 export declare const ACTION_URL_MAX = 2048;
+/** How many earlier addresses one action may keep declared (`previous_urls`). */
+export declare const MAX_ACTION_PREVIOUS_URLS = 3;
 /** An action's timeout ceiling, and its default. */
 export declare const ACTION_TIMEOUT_MAX_MS = 8000;
 /** Largest action response the container reads. */
@@ -52,6 +54,10 @@ export interface ManifestAction {
     description: string;
     /** https only. The container calls exactly this URL. */
     url: string;
+    /** Addresses this action had as its `url` in earlier versions and is still served at. NEVER
+     *  called by a container that installed this manifest, and not on its allowlist: see the header.
+     *  Present only when the document gave a non-empty list; in the document's order. */
+    previous_urls?: string[];
     method: "POST";
     input: Record<string, unknown>;
     output: Record<string, unknown>;

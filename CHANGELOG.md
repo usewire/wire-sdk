@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.18.0
+
+- **Moving an action to a new address.** `ManifestAction` takes
+  `previous_urls`: up to three addresses the action had as its `url` in
+  earlier versions and that you still serve. An install calls the `url` of the
+  version it has installed, and Wire signs a call only to an address your
+  current manifest declares for that action. Until now that meant a version
+  that changed an action's `url` broke the action for every install still on
+  the earlier version, until that person updated. List the old address in
+  `previous_urls` in the same version that changes `url`, and those installs
+  keep working. Retire it by registering a version without it. See "Moving an
+  action to a new address" in the README.
+  - Wire accepts a previous address only if the action had it, as `url` or as
+    a previous address, in the version being replaced. A first version cannot
+    declare one, and an address you have retired cannot be declared again.
+  - Wire never calls a previous address for an install on the version that
+    declares it, and it is not shown on the connect screen.
+- **`registerManifest()` returns `warnings`.** A registration that succeeds
+  can carry warnings from Wire, and the SDK used to drop them. They are now on
+  the result as `warnings: { code, message }[]` (empty when there are none).
+  The new one to check in a deploy script is `ACTION_ADDRESS_DROPPED`: this
+  version moved or removed an action without listing its old address, so
+  installs on the previous version fail that action until they update.
+- The vendored manifest validator moves to the engine commit that adds the
+  field (`944df0d4253087f49045a285747ba3bbe3100965`).
+
 ## 0.17.1
 
 - Docs: Wire now gives a spent refresh token a ten-second grace window. Sent

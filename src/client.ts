@@ -157,6 +157,8 @@ interface ManifestRegistrationData {
   tools?: string[];
   base_tools?: string[];
   actions?: { name: string; host: string }[];
+  /** Present only when Wire has something to say; absent from older servers. */
+  warnings?: unknown;
 }
 
 interface ApiEnvelope<T> {
@@ -668,6 +670,11 @@ export class WireClient {
    *   - 503 while the manifest registry is not available.
    * Re-registering an identical document answers status "unchanged".
    *
+   * A registration that succeeds can still carry `warnings`. Check them in a
+   * deploy script: `ACTION_ADDRESS_DROPPED` means this version moved or removed
+   * an action without listing its old address in `previous_urls`, and installs
+   * on the previous version now fail that action until they update.
+   *
    * Also sends X-Wire-Manifest-Validator: the engine commit this SDK's
    * defineManifest() validated against, so Wire can warn when it is behind.
    */
@@ -714,12 +721,25 @@ export class WireClient {
       tools: data.tools ?? [],
       baseTools: data.base_tools ?? [],
       actions: data.actions ?? [],
+      warnings: registrationWarnings(data.warnings),
     };
   }
 
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
+
+/** The server's `warnings`, kept only where each entry has a string code and message. */
+function registrationWarnings(raw: unknown): { code: string; message: string }[] {
+  if (!Array.isArray(raw)) return [];
+  const out: { code: string; message: string }[] = [];
+  for (const w of raw) {
+    if (w && typeof w === 'object' && typeof (w as { code?: unknown }).code === 'string' && typeof (w as { message?: unknown }).message === 'string') {
+      out.push({ code: (w as { code: string }).code, message: (w as { message: string }).message });
+    }
+  }
+  return out;
+}
 
 function generateNonce(): string {
   const buf = new Uint8Array(24);

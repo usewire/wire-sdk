@@ -42,6 +42,7 @@ export type {
   ConnectOptions,
   DeviceKey,
   ManifestRegistration,
+  ManifestRegistrationWarning,
   PendingConnection,
   StatusSnapshot,
 } from './types.js';
