@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.19.0
 
 - **A bundle agent's app chooses the container on sign-in.**
   `createAuthorizeRequest()` and `authorizeUrl()` take `container`: `'new'`
