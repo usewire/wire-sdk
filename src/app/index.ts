@@ -202,6 +202,7 @@ export type {
   WireIdentity,
   WireSignInErrorCode,
   WireSignInOptions,
+  WireSignInContainer,
   WireSignInScope,
   WireSignInTokens,
 } from './sign-in.js';
