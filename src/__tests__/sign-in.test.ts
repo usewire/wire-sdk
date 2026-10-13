@@ -121,6 +121,20 @@ describe('the authorize request', () => {
     expect(new URL(c.authorizeUrl({ state: 'a-state-of-my-own', codeChallenge: await pkceChallenge('v'), scope: ['openid', 'openid'] as never })).searchParams.get('scope')).toBe('openid');
   });
 
+  it('a bundle agent’s app names the container: `new`, or one of its install ids; nothing is sent when it does not', async () => {
+    const c = client();
+    expect(new URL((await c.createAuthorizeRequest()).url).searchParams.has('wire_container')).toBe(false);
+    expect(new URL((await c.createAuthorizeRequest({ container: 'new' })).url).searchParams.get('wire_container')).toBe('new');
+    expect(new URL((await c.createAuthorizeRequest({ container: 'ins_AbC123xyz' })).url).searchParams.get('wire_container')).toBe('ins_AbC123xyz');
+    expect(new URL(c.authorizeUrl({ state: 'a-state-of-my-own', codeChallenge: await pkceChallenge('v'), container: 'new' })).searchParams.get('wire_container')).toBe('new');
+    for (const bad of ['old', 'ins_', 'ins_x', 'cont_123456', '../x'] as never[]) {
+      await expect(c.createAuthorizeRequest({ container: bad })).rejects.toThrow(/container must be/);
+    }
+    // still never a resource
+    expect(new URL((await c.createAuthorizeRequest({ container: 'new' })).url).searchParams.has('resource')).toBe(false);
+    expect(calls).toHaveLength(0);
+  });
+
   it('refuses a weak state or something that is not an S256 challenge', async () => {
     const c = client();
     expect(() => c.authorizeUrl({ state: 'x', codeChallenge: 'a'.repeat(43) })).toThrow(WireSignInError);

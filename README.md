@@ -296,6 +296,19 @@ other credential, and out of your logs. `exchangeCode` requires the `nonce`
 from `createAuthorizeRequest()`: it ties the ID token to this sign-in. (Pass
 `nonce: false` only if you built the authorize URL yourself without one.)
 
+**A bundle agent chooses the person's container.** If your agent's mode is
+Bundle, Wire never asks the person which container to use: your app does.
+Leave `container` out for the default (the container your app is already
+connected to, else the one they used most recently, else a new one), pass
+`'new'` to start a fresh one, or pass one of your installs' ids (`ins_…`, from
+an install webhook or `WireAgentClient.listInstalls(agentUserId)`) to use that
+one. Wire refuses an install id that is not this person's install of your
+agent. A Connect agent ignores it: the person chooses on Wire's screen.
+
+```ts
+const request = await wire.createAuthorizeRequest({ scope: ['email', 'offline_access'], container: 'new' });
+```
+
 What you get back:
 
 - **`identity.agentUserId`** (`au_…`): the person, to your agent. It is the

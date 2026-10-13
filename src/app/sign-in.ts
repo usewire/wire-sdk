@@ -47,6 +47,9 @@ import { WireSdkError } from '../types.js';
 
 const DEFAULT_BASE_URL = 'https://app.usewire.io';
 const AUTHORIZE_PATH = '/api/auth/oauth2/authorize';
+/** The authorize parameter a bundle agent's app names a container with. */
+const CONTAINER_PARAM = 'wire_container';
+const INSTALL_ID = /^ins_[A-Za-z0-9_-]{6,64}$/;
 const TOKEN_PATH = '/api/auth/oauth2/token';
 const USERINFO_PATH = '/api/auth/oauth2/userinfo';
 const DISCOVERY_PATH = '/.well-known/openid-configuration';
@@ -57,6 +60,12 @@ export const AGENT_USER_ID_PATTERN = /^au_[0-9a-z]{16,48}$/;
 
 /** What a sign-in may ask for. `openid` is always sent. */
 export type WireSignInScope = 'openid' | 'email' | 'profile' | 'offline_access';
+/**
+ * Which container a sign-in to a BUNDLE agent uses: `'new'` for a fresh one,
+ * or an install id (`ins_…`) of this person's install of your agent. Leave it
+ * out for the default.
+ */
+export type WireSignInContainer = 'new' | `ins_${string}`;
 
 export type WireSignInErrorCode =
   /** A constructor or call argument is missing or malformed. Your code's to fix. */
@@ -263,12 +272,20 @@ export class WireSignIn {
    * `scope`: `openid` is always included. Add `email` and `profile` only if
    * your manifest's `access.identity` lists them (Wire grants no more than the
    * manifest asks for), and `offline_access` for a refresh token.
+   *
+   * `container` (bundle agents only): which of the person's containers this
+   * sign-in uses. Leave it out for the default: the one your app is already
+   * connected to, else the one they used most recently, else a new one.
+   * `'new'` starts a fresh container. An install id (`ins_…`, from
+   * an install webhook, or `WireAgentClient.listInstalls(agentUserId)`) uses that install's container,
+   * if it is this person's install of your agent; any other is refused.
+   * Connect agents ignore it: the person chooses.
    */
-  async createAuthorizeRequest(options: { scope?: WireSignInScope[] } = {}): Promise<WireAuthorizeRequest> {
+  async createAuthorizeRequest(options: { scope?: WireSignInScope[]; container?: WireSignInContainer } = {}): Promise<WireAuthorizeRequest> {
     const state = randomUrlSafe(24);
     const nonce = randomUrlSafe(24);
     const codeVerifier = randomUrlSafe(48);
-    const url = this.authorizeUrl({ state, nonce, codeChallenge: await pkceChallenge(codeVerifier), scope: options.scope });
+    const url = this.authorizeUrl({ state, nonce, codeChallenge: await pkceChallenge(codeVerifier), scope: options.scope, container: options.container });
     return { url, state, codeVerifier, nonce };
   }
 
@@ -277,7 +294,7 @@ export class WireSignIn {
    * `createAuthorizeRequest()` is this with fresh values. Never has a
    * `resource`: signing in to your app names none.
    */
-  authorizeUrl(input: { state: string; codeChallenge: string; nonce?: string; scope?: WireSignInScope[] }): string {
+  authorizeUrl(input: { state: string; codeChallenge: string; nonce?: string; scope?: WireSignInScope[]; container?: WireSignInContainer }): string {
     if (!input || typeof input.state !== 'string' || input.state.length < 8) {
       throw new WireSignInError('INVALID_ARGUMENT', 'state is required: an unguessable value you keep in the session');
     }
@@ -294,6 +311,12 @@ export class WireSignIn {
     url.searchParams.set('code_challenge', input.codeChallenge);
     url.searchParams.set('code_challenge_method', 'S256');
     if (input.nonce) url.searchParams.set('nonce', input.nonce);
+    if (input.container !== undefined) {
+      if (input.container !== 'new' && !(typeof input.container === 'string' && INSTALL_ID.test(input.container))) {
+        throw new WireSignInError('INVALID_ARGUMENT', "container must be 'new' or one of your app's install ids (ins_…)");
+      }
+      url.searchParams.set(CONTAINER_PARAM, input.container);
+    }
     return url.toString();
   }
 

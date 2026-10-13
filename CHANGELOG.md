@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.19.0
+
+- **A bundle agent's app chooses the container on sign-in.**
+  `createAuthorizeRequest()` and `authorizeUrl()` take `container`: `'new'`
+  for a fresh container, or an install id (`ins_…`) of this person's install
+  of your agent. Leave it out for the default. Wire refuses an install id that
+  is not this person's. Connect agents ignore it. New type:
+  `WireSignInContainer`.
+
 ## 0.18.0
 
 - **Moving an action to a new address.** `ManifestAction` takes
